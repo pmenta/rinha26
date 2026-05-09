@@ -760,13 +760,18 @@ contexto perdido entre sessões e manter o agente sempre alinhado.
 | `build-image.yml` | `push:main`, `push:tags 'v*'`, `workflow_dispatch` | Builda `apps/api/Dockerfile` para `linux/amd64` (QEMU) e empurra para `ghcr.io/<owner>/rinha26-api`. Tags: `:latest`, `:sha-<short>`, `:v*`. Cache de Buildx via GHA. Login via `GITHUB_TOKEN` (sem secret extra). |
 | `submission.yml` | `push:main`, `workflow_dispatch` | Reconstrói a branch `submission` (force-push) com **só** o que a Engine da Rinha precisa: `docker-compose.yml` (referencia `ghcr.io/<owner>/rinha26-api:latest`, sem `build:`), `nginx.conf`, `info.json`, `resources/normalization.json`, `resources/mcc_risk.json`, `resources/example-references.json`, `README.md` curto. Não inclui código-fonte (regra `docs/SUBMISSAO.md`). |
 
-**Pré-requisitos no GitHub** (a configurar quando o repo for criado):
-- Repositório **público** (regra da Rinha — `docs/SUBMISSAO.md`).
-- Permissão `Settings → Actions → Workflow permissions = Read and write`
-  (necessária para `submission.yml` fazer force push).
-- A primeira execução de `build-image.yml` deixa a imagem `ghcr.io/<owner>/rinha26-api`
-  privada por padrão; tornar pública em `Packages → Manage actions access`
-  (a Engine precisa de pull anônimo).
+**Pré-requisitos no GitHub** (configurados em `pmenta/rinha26`):
+- ✅ Repositório **público** (regra da Rinha — `docs/SUBMISSAO.md`).
+- ✅ `Settings → Actions → Workflow permissions = Read and write` (configurado
+  via `gh api -X PUT repos/pmenta/rinha26/actions/permissions/workflow`).
+- ⚠️ A primeira execução de `build-image.yml` deixa a imagem
+  `ghcr.io/pmenta/rinha26-api` **privada** por padrão (comportamento do
+  GitHub Packages criados via `GITHUB_TOKEN`). **Tornar pública manualmente**
+  para a Engine da Rinha conseguir `docker pull` anônimo:
+  - Web: <https://github.com/users/pmenta/packages/container/rinha26-api/settings>
+    → "Change package visibility" → **Public**.
+  - CLI (precisa do scope `write:packages` no token): `gh auth refresh -s write:packages`
+    e então `gh api -X PATCH /user/packages/container/rinha26-api -f visibility=public`.
 
 **Linter:** os workflows passam em `actionlint` (validado localmente via
 `docker run --rm -w /repo -v $(pwd):/repo rhysd/actionlint:latest`).
