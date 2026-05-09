@@ -11,7 +11,8 @@
     "vite.config.ts",
     "vitest.config.ts",
     "src/**/*.ts",
-    "src/**/*.d.ts"
+    "src/**/*.d.ts",
+    "scripts/**/*.ts"
   ],
   "references": [
     { "path": "../../packages/core/tsconfig.lib.json" },

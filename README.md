@@ -72,13 +72,31 @@ curl -X POST http://localhost:9999/fraud-score \
 # Smoke local (5 reqs, valida formato)
 k6 run test/smoke.js
 
-# Avaliação oficial (~5000 reqs, gera test/results.json)
+# Avaliação oficial (~54k reqs, gera test/results.json)
 k6 run test/test.js
 
 # Sem k6 instalado? Use container (network=host funciona em Linux e OrbStack):
 docker run --rm --network=host -v $(pwd)/test:/test grafana/k6:latest \
   run /test/smoke.js
 ```
+
+### Harness do agente (L10/L11/L12)
+
+```bash
+# Bench do VectorIndexPort (Nx target):
+bunx nx run vector-store:bench
+# → tabela markdown no stdout + JSON em packages/vector-store/bench-results/
+
+# Score simulator local (substituto leve do k6 oficial):
+docker compose up -d                     # ou bun run dev
+bunx nx run api:simulate                 # roda test-data.json contra :9999
+bun apps/api/scripts/score-simulator/run.ts --limit 1000 --concurrency 50
+# → final_score + breakdown + JSON em apps/api/test-output/
+```
+
+Ver [`packages/vector-store/bench/README.md`](./packages/vector-store/bench/README.md)
+e [`apps/api/scripts/score-simulator/README.md`](./apps/api/scripts/score-simulator/README.md)
+para detalhes.
 
 ---
 
@@ -159,10 +177,10 @@ L1-L18, DoR por categoria, gates de auto-merge, plano Archon) em
 2. ✅ **Fase 2 — Infra (`docker-compose` + nginx LB + 2 réplicas) + endpoints reais.**
 3. ✅ **Fase 3 — CI/CD GitHub Actions.**
 4. ✅ **Fase 4 — Mapeamento das camadas de harness** (taxonomia de tarefas, DoR
-   por categoria, ADRs, plano Archon). **Próximas camadas materiais a construir:**
-   contracts test entre `VectorIndexPort` impls (L10), bench harness (L11) e
-   score simulator local (L12) — pré-requisito da Fase 5.
-5. ⏳ **Fase 5 — Implementações reais comparadas:** brute-force baseline → KD-tree →
+   por categoria, ADRs, plano Archon).
+5. ✅ **Fase 4.5 — Pré-requisitos materiais da Fase 5:** contracts test entre
+   `VectorIndexPort` impls (L10), bench harness (L11) e score simulator local (L12).
+6. ⏳ **Fase 5 — Implementações reais comparadas:** brute-force baseline → KD-tree →
    VP-tree → HNSW; pré-processamento binário do dataset 3M; tuning de infra; benchmarks.
 
 ---

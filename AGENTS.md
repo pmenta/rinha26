@@ -517,9 +517,9 @@ Para o **escopo da Rinha 2026**, as tarefas mais frequentes serão **C, D, F e H
 | **L7.** Golden fixtures bit-a-bit dos exemplos do PRD (vetorização) | ✅ | `packages/core/src/domain/policies/vectorize.spec.ts` |
 | **L8.** Lint + typecheck + build em todo commit (CI) | ✅ | `.github/workflows/ci.yml` |
 | **L9.** Smoke `k6 test/smoke.js` em todo commit (CI) | ✅ | `.github/workflows/ci.yml` (job `docker-smoke`) |
-| **L10.** Spec de equivalência: toda `VectorIndexPort` impl produz o mesmo top-K que `BruteForceVectorIndex` em dataset determinístico | ⏳ Fase 5 | criar `packages/vector-store/src/__contracts__/vector-index.contract.spec.ts` (parametrizado por kind) |
-| **L11.** Bench harness (Vitest bench ou tinybench) — tempo de query KNN, tempo de build de índice, memória estimada por `process.memoryUsage()`, output JSON | ⏳ Fase 5 | criar `packages/vector-store/bench/` |
-| **L12.** Score simulator local — roda `test/test-data.json` contra a API local, calcula `final_score` segundo `docs/AVALIACAO.md`, sem precisar de k6 | ⏳ Fase 4.5 / 5 | criar `apps/api/scripts/score-simulator.ts` |
+| **L10.** Spec de equivalência: toda `VectorIndexPort` impl produz o mesmo top-K que `BruteForceVectorIndex` em dataset determinístico | ✅ | `packages/vector-store/src/__contracts__/{synthetic-dataset,vector-index.contract}.ts` + `packages/vector-store/src/brute-force/brute-force.contract.spec.ts` |
+| **L11.** Bench harness — tempo de query KNN, tempo de build, memória estimada, output JSON | ✅ | `packages/vector-store/bench/{measure,run-bench,measure.spec}.ts` + target Nx `vector-store:bench` |
+| **L12.** Score simulator local — roda `test/test-data.json` contra a API local, calcula `final_score` segundo `docs/AVALIACAO.md`, sem precisar de k6 | ✅ | `apps/api/scripts/score-simulator/{scoring,scoring.spec,run}.ts` + target Nx `api:simulate` |
 | **L13.** Property-based test (`fast-check`) — invariantes de vetorização: clamp01 ⊆ [0,1], `-1` só nos índices 5/6, output sempre length=14 | ⏳ Opcional Fase 5 | adicionar em `vectorize.spec.ts` |
 | **L14.** Bench guard no CI — falha se uma impl regrediu > 5% de p99 vs baseline | ⏳ Fase 5 | comparar `bench-results.json` PR vs `main` |
 | **L15.** Audit de deps (`bun audit` / `osv-scanner`) | ⏳ Fase 4 ou 5 | adicionar step no `ci.yml` |
@@ -527,9 +527,8 @@ Para o **escopo da Rinha 2026**, as tarefas mais frequentes serão **C, D, F e H
 | **L17.** Workflow Archon `idea-to-pr` / `plan-to-pr` configurado | ⏳ Fase 4.6 | criar `.archon/workflows/*.yaml` |
 | **L18.** ADR template + primeiros 3 ADRs (stack, política HTTP, brute-force como oráculo) | ⏳ Fase 4.2-4.4 | `docs/adr/` |
 
-> **Critério para começar a Fase 5**: L10 + L11 + L12 prontos. Sem eles, não é
-> possível afirmar com segurança que uma nova `VectorIndexPort` impl é "melhor"
-> que o baseline.
+> **Critério para começar a Fase 5**: L10 + L11 + L12 prontos. ✅ Cumprido em
+> 2026-05-09 (commits após `d672c38`).
 
 ### 12.3) Definition of Ready (DoR) por categoria
 
@@ -720,6 +719,24 @@ contexto perdido entre sessões e manter o agente sempre alinhado.
 |---|---|
 | `createVectorIndex(kind, refs)` | Fábrica única em `src/factory.ts`. Hoje só `'brute-force'` (re-exportado do core). `'kd-tree'`, `'vp-tree'`, `'hnsw'` lançam erro descritivo até a Fase 5. |
 
+#### `__contracts__/` — set comum de testes (L10)
+
+| Componente | Arquivo | Notas |
+|---|---|---|
+| LCG Park-Miller + dataset/query determinísticos | `src/__contracts__/synthetic-dataset.ts` | Sem dep externa. Reproduz mesma sequência em qualquer máquina. Sentinela `-1` configurável (default 30%), label fraud configurável (default 30%). |
+| `runVectorIndexContracts(opts)` | `src/__contracts__/vector-index.contract.ts` | "Shared examples" pattern — cada impl invoca em `*.contract.spec.ts`. Modo `exact` (top-K bit-a-bit igual ao oráculo) ou `ann` (recall ≥ `recallMin`). 8 testes: rejeições (k≤0, vetor inválido), top-K em 3 queries (1k vetores), k>|dataset|, sentinela `-1`. |
+| `brute-force.contract.spec.ts` | `src/brute-force/brute-force.contract.spec.ts` | Aplica o contract ao oráculo de ADR-003. **8/8 verde**. |
+
+#### `bench/` — harness de benchmark (L11)
+
+| Componente | Arquivo | Notas |
+|---|---|---|
+| `summarizeLatency`, `runBench`, `runBenchSuite` | `bench/measure.ts` | Funções puras, sem dep. Quantis nearest-rank (idem k6). Snapshot inclui `runtime: {bun, node, platform, arch}` para portabilidade do JSON. |
+| Runner CLI | `bench/run-bench.ts` | Imprime tabela markdown no stdout + grava JSON em `bench-results/<timestamp>.json` + symlink `latest.json`. |
+| Smoke do harness | `bench/measure.spec.ts` | 3 testes — garante que o próprio bench não regrediu. |
+| Target Nx `bench` | `package.json` | `bunx nx run vector-store:bench`. `cache: false`, `dependsOn: ['build']`. |
+| Baseline brute-force (Mac M / arm64 / Bun 1.1.29) | — (não commitado, hardware-dependente) | N=10k → p99 query = 0.367 ms; build_ms ≈ 0; heap ≈ 2.7 MB. Extrapolação linear para N=3M ≈ 110 ms p99 — justifica investir em ANN na Fase 5. |
+
 ### `apps/api` — HTTP (Bun + Elysia)
 
 | Componente | Arquivo | Notas |
@@ -733,13 +750,25 @@ contexto perdido entre sessões e manter o agente sempre alinhado.
 | `GET /ready` | `src/routes/ready.ts` | `200 {status:"ok"}` quando `refs.length > 0`; `503 {status:"loading"}` enquanto carrega. |
 | `POST /fraud-score` | `src/routes/fraud-score.ts` | Valida via Zod (`ScoreTransactionInputSchema`); chama use case; **default-safe `200 {approved:true, fraud_score:0}` em qualquer falha** (ver hurdle §11.6). |
 
-#### Testes do `apps/api` (10 testes, 3 specs)
+#### `scripts/score-simulator/` — substituto leve do k6 oficial (L12)
+
+| Componente | Arquivo | Notas |
+|---|---|---|
+| Constantes + `classify` + `summarize` + `quantile` | `scripts/score-simulator/scoring.ts` | Replicação **bit-a-bit** de `test/test.js → handleSummary` (`docs/AVALIACAO.md`). Funções puras. Output JSON com mesmo schema do `test/results.json`. |
+| Specs golden | `scripts/score-simulator/scoring.spec.ts` | 18 testes: `classify` (TP/TN/FP/FN/Err), `quantile`, **8 cenários golden** da tabela "Exemplos de pontuação" de `docs/AVALIACAO.md` (final_score 6000 / 4524.15 / 4000 / 3157.02 / 1104.01 / 371.85 / -1000 / -6000). |
+| Runner CLI | `scripts/score-simulator/run.ts` | Pool de concorrência configurável, timeout 2001ms (idem k6), output JSON em `apps/api/test-output/simulator-results.json` + pretty print no stdout. |
+| Target Nx `simulate` | `package.json` | `bunx nx run api:simulate`. `cache: false`. |
+
+**Validação real**: rodando contra a stack docker com `example-references.json` (100 vetores), 2000 reqs com `--concurrency 80` → 1810 rps, p99 = 201 ms, `final_score = 1390.08`, 0 erros HTTP. Esperado: detecção será ruim com só 100 vetores; o simulator confirma que o pipeline funciona.
+
+#### Testes do `apps/api` (28 testes, 4 specs)
 
 | Spec | Cobertura |
 |---|---|
 | `routes/ready.spec.ts` | 200 quando ready / 503 quando loading. Usa `Elysia.handle(Request)` em-memória. 2 testes. |
 | `routes/fraud-score.spec.ts` | Caso fraudulento do PRD com 5 fraud-vizinhos → score 1; payload inválido → default-safe; índice vazio → default-safe. 3 testes. |
 | `loaders/loaders.spec.ts` | Lê e valida `normalization.json`, `mcc_risk.json`, `example-references.json` e o **`references.json.gz` real (3M vetores em ~6.7s no Vitest/Node)**. 5 testes. |
+| `scripts/score-simulator/scoring.spec.ts` | Specs golden da fórmula de scoring (8 casos do PRD + classify + quantile). 18 testes. |
 
 ### Infra (Fase 2)
 
@@ -789,9 +818,10 @@ container: `docker run --network=host grafana/k6:latest run /test/smoke.js`
 
 - ✅ **Fase 1** (boilerplate Nx + DDD/Hexagonal). 56 testes verdes. `bun run verify` passa.
 - ✅ **Fase 2** (infra Docker). 61 testes verdes. Stack `docker compose up --build` sobe e k6 smoke passa 100%.
-- ✅ **Fase 3** (CI/CD GitHub Actions). 3 workflows, `actionlint` clean. **Pendente:** push para repo público para validar execução real.
-- ✅ **Fase 4** (mapeamento das camadas de harness). Taxonomia de tarefas, 18 camadas L1-L18 catalogadas (10 ✓ + 8 ⏳), DoR por categoria, gates de auto-merge, plano Archon, 3 ADRs aceitos. **Próximo passo material:** L10 (contracts test entre `VectorIndexPort` impls), L11 (bench harness) e L12 (score simulator local) — pré-requisito para começar a Fase 5.
-- ⏳ **Fase 5** (implementações sub-lineares de `VectorIndexPort` + pré-processamento binário do `references.json.gz` 3M).
+- ✅ **Fase 3** (CI/CD GitHub Actions). 3 workflows, `actionlint` clean. Pipeline validada end-to-end: `pmenta/rinha26` público, imagem pública em `ghcr.io/pmenta/rinha26-api`, branch `submission` auto-gerada, k6 smoke verde.
+- ✅ **Fase 4** (mapeamento das camadas de harness). Taxonomia de tarefas, 18 camadas L1-L18 catalogadas, DoR por categoria, gates de auto-merge, plano Archon, 3 ADRs aceitos.
+- ✅ **Fase 4.5** (pré-requisitos materiais da Fase 5). **L10** contracts test (8/8 verde para brute-force), **L11** bench harness (target Nx + JSON output + smoke spec), **L12** score simulator local (18/18 verde, 8 golden + classify + quantile, runner CLI ponta-a-ponta validado).
+- ⏳ **Fase 5** (implementações sub-lineares de `VectorIndexPort` + pré-processamento binário do `references.json.gz` 3M). DoR formal cumprida.
 
 ---
 

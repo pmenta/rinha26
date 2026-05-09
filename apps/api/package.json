@@ -23,6 +23,14 @@
         "command": "bun run src/main.ts",
         "options": { "cwd": "{projectRoot}" }
       },
+      "simulate": {
+        "executor": "nx:run-commands",
+        "cache": false,
+        "options": {
+          "cwd": "{projectRoot}",
+          "command": "bun scripts/score-simulator/run.ts"
+        }
+      },
       "test": {
         "executor": "@nx/vite:test"
       }
