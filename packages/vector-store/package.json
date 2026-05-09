@@ -26,6 +26,16 @@
           "commands": ["tsc --build tsconfig.build.json"],
           "parallel": false
         }
+      },
+      "bench": {
+        "executor": "nx:run-commands",
+        "outputs": ["{projectRoot}/bench-results"],
+        "cache": false,
+        "dependsOn": ["build"],
+        "options": {
+          "cwd": "{projectRoot}",
+          "command": "bun bench/run-bench.ts"
+        }
       }
     }
   },

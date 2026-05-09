@@ -48,6 +48,11 @@ Thumbs.db
 # Resultados do k6
 test/results.json
 
+# Bench results: vamos commitar uns marcos manualmente; não cada run.
+packages/*/bench-results/*.json
+!packages/*/bench-results/baseline-*.json
+packages/*/bench-results/latest.json
+
 # Hooks copiados manualmente
 hooks copy
 .cursor/hooks/state
