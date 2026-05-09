@@ -764,14 +764,17 @@ contexto perdido entre sessões e manter o agente sempre alinhado.
 - ✅ Repositório **público** (regra da Rinha — `docs/SUBMISSAO.md`).
 - ✅ `Settings → Actions → Workflow permissions = Read and write` (configurado
   via `gh api -X PUT repos/pmenta/rinha26/actions/permissions/workflow`).
-- ⚠️ A primeira execução de `build-image.yml` deixa a imagem
-  `ghcr.io/pmenta/rinha26-api` **privada** por padrão (comportamento do
-  GitHub Packages criados via `GITHUB_TOKEN`). **Tornar pública manualmente**
-  para a Engine da Rinha conseguir `docker pull` anônimo:
-  - Web: <https://github.com/users/pmenta/packages/container/rinha26-api/settings>
-    → "Change package visibility" → **Public**.
-  - CLI (precisa do scope `write:packages` no token): `gh auth refresh -s write:packages`
-    e então `gh api -X PATCH /user/packages/container/rinha26-api -f visibility=public`.
+- ✅ Imagem `ghcr.io/pmenta/rinha26-api` tornada **pública** após a primeira
+  execução de `build-image.yml`. (GitHub Packages cria privada por default
+  quando publicada via `GITHUB_TOKEN`; mudar em
+  <https://github.com/users/pmenta/packages/container/rinha26-api/settings>
+  ou via `gh auth refresh -s write:packages` + `gh api -X PATCH /user/packages/container/rinha26-api -f visibility=public`.)
+
+**Validação end-to-end (2026-05-09)**: pull anônimo da imagem do `ghcr.io`
+funciona; `docker compose up` direto da branch `submission` (sem `build:`,
+só `image: ghcr.io/...`) sobe os 3 containers; `k6 smoke` passa **20/20
+checks** com p(95) = **4.97ms** após warmup (lazy load + JIT cold custam
+500ms na 1ª req — esperado).
 
 **Linter:** os workflows passam em `actionlint` (validado localmente via
 `docker run --rm -w /repo -v $(pwd):/repo rhysd/actionlint:latest`).
