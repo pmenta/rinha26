@@ -1,0 +1,124 @@
+# CI principal: roda em todo PR e em push para `main`.
+#
+# Mantém a disciplina XP do projeto (`AGENTS.md` §"Pair Programming Com Um Agente
+# de IA"): cada commit em `main` precisa ter CI verde — lint + typecheck + test +
+# build (`bun run verify`) **e** smoke ponta-a-ponta com `docker compose` + `k6`.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancela workflows em andamento da mesma ref quando um novo commit chega.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------------- #
+  # verify: bun install + lint + typecheck + test + build                     #
+  # ------------------------------------------------------------------------- #
+  verify:
+    name: lint + typecheck + test + build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # `nx affected` precisa do histórico para comparar com `origin/main`.
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.1.29
+
+      - name: Cache Bun
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lockb', 'bun.lock', 'package.json', 'packages/**/package.json', 'apps/**/package.json') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Cache Nx
+        uses: actions/cache@v4
+        with:
+          path: .nx/cache
+          key: nx-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            nx-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify (lint + typecheck + test + build)
+        run: bun run verify
+        env:
+          CI: 'true'
+
+  # ------------------------------------------------------------------------- #
+  # docker-smoke: build do compose + k6 smoke contra :9999                    #
+  # ------------------------------------------------------------------------- #
+  docker-smoke:
+    name: docker-compose + k6 smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: verify
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build images (cached)
+        uses: docker/bake-action@v5
+        with:
+          files: docker-compose.yml
+          load: true
+          set: |
+            *.cache-from=type=gha,scope=rinha26-api
+            *.cache-to=type=gha,mode=max,scope=rinha26-api
+
+      - name: Start stack
+        run: docker compose up -d
+        env:
+          COMPOSE_DOCKER_CLI_BUILD: '1'
+
+      - name: Wait for /ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:9999/ready >/dev/null 2>&1; then
+              echo "API ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "API did not become ready in 30s — printing logs"
+          docker compose logs --tail=200
+          exit 1
+
+      - name: Run k6 smoke
+        run: |
+          docker run --rm --network=host \
+            -v "${GITHUB_WORKSPACE}/test:/test" \
+            grafana/k6:latest run /test/smoke.js
+
+      - name: Print stack logs (always)
+        if: always()
+        run: docker compose logs --tail=200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down --remove-orphans

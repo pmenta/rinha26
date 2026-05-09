@@ -595,6 +595,27 @@ contexto perdido entre sessões e manter o agente sempre alinhado.
 | nginx LB | `nginx.conf` | Round-robin `api1:3000`/`api2:3000`. Worker único, 1024 conn. `proxy_buffering off`, keepalive upstream. Timeouts 1-2s coerentes com `2001ms` do k6. |
 | docker-compose | `docker-compose.yml` | nginx (0.10cpu/30MB) + api1 + api2 (0.45cpu/160MB cada). Total **0.95cpu/350MB** (limite oficial). `bridge` net, `linux/amd64`, imagens públicas. Bind mount de `./resources`. |
 
+### CI/CD (Fase 3)
+
+3 workflows GitHub Actions em `.github/workflows/`:
+
+| Workflow | Trigger | Função |
+|---|---|---|
+| `ci.yml` | `push:main`, `pull_request:main`, `workflow_dispatch` | **`verify`** (bun install + lint + typecheck + test + build) → **`docker-smoke`** (build do compose + k6 `test/smoke.js` contra `:9999` via `--network=host`). Cache de `~/.bun/install/cache`, `node_modules`, `.nx/cache` por hash de manifests. Concurrency `cancel-in-progress` para canceler runs antigos. |
+| `build-image.yml` | `push:main`, `push:tags 'v*'`, `workflow_dispatch` | Builda `apps/api/Dockerfile` para `linux/amd64` (QEMU) e empurra para `ghcr.io/<owner>/rinha26-api`. Tags: `:latest`, `:sha-<short>`, `:v*`. Cache de Buildx via GHA. Login via `GITHUB_TOKEN` (sem secret extra). |
+| `submission.yml` | `push:main`, `workflow_dispatch` | Reconstrói a branch `submission` (force-push) com **só** o que a Engine da Rinha precisa: `docker-compose.yml` (referencia `ghcr.io/<owner>/rinha26-api:latest`, sem `build:`), `nginx.conf`, `info.json`, `resources/normalization.json`, `resources/mcc_risk.json`, `resources/example-references.json`, `README.md` curto. Não inclui código-fonte (regra `docs/SUBMISSAO.md`). |
+
+**Pré-requisitos no GitHub** (a configurar quando o repo for criado):
+- Repositório **público** (regra da Rinha — `docs/SUBMISSAO.md`).
+- Permissão `Settings → Actions → Workflow permissions = Read and write`
+  (necessária para `submission.yml` fazer force push).
+- A primeira execução de `build-image.yml` deixa a imagem `ghcr.io/<owner>/rinha26-api`
+  privada por padrão; tornar pública em `Packages → Manage actions access`
+  (a Engine precisa de pull anônimo).
+
+**Linter:** os workflows passam em `actionlint` (validado localmente via
+`docker run --rm -w /repo -v $(pwd):/repo rhysd/actionlint:latest`).
+
 **Smoke validado**: `docker compose up --build` + `k6 run test/smoke.js` →
 **20/20 checks verdes**, p(95) = ~19ms com brute-force sobre 100 vetores
 do `example-references.json`. Para rodar k6 contra `localhost:9999` via
@@ -604,8 +625,8 @@ container: `docker run --network=host grafana/k6:latest run /test/smoke.js`
 ### Estado das fases
 
 - ✅ **Fase 1** (boilerplate Nx + DDD/Hexagonal). 56 testes verdes. `bun run verify` passa.
-- ✅ **Fase 2** (infra Docker). 61 testes verdes (49+2+10). Stack `docker compose up --build` sobe e k6 smoke passa 100%.
-- ⏳ **Fase 3** (CI/CD GitHub Actions).
+- ✅ **Fase 2** (infra Docker). 61 testes verdes. Stack `docker compose up --build` sobe e k6 smoke passa 100%.
+- ✅ **Fase 3** (CI/CD GitHub Actions). 3 workflows commitados (`ci.yml`, `build-image.yml`, `submission.yml`). `actionlint` clean. **Pendente:** push para repo GitHub público para validar execução real.
 - ⏳ **Fase 4** (camadas de harness do agente + Archon).
 - ⏳ **Fase 5** (implementações sub-lineares de `VectorIndexPort` + pré-processamento binário do `references.json.gz` 3M).
 

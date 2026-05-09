@@ -1,0 +1,149 @@
+# Sincroniza a branch `submission` (`docs/SUBMISSAO.md`).
+#
+# A branch `submission` deve conter APENAS o necessário para a Engine da Rinha
+# rodar o teste — sem código fonte. Hoje:
+#
+#   ├── docker-compose.yml   ← versão "submission" usando imagem pré-buildada (ghcr.io)
+#   ├── nginx.conf
+#   ├── info.json
+#   └── resources/           ← bind mount para o dataset
+#
+# Roda em todo push para `main` (após o `Build & publish image` ter pinado
+# `:latest` no ghcr.io). A engine da rinha lê o `docker-compose.yml` e roda.
+
+name: Sync submission branch
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-submission
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Push to `submission`
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Aguarda a imagem terminar de subir para ghcr.io. (Não bloqueante: se a
+    # imagem ainda não existir, a engine usaria a versão anterior — `:latest`.)
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build submission tree
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/submission
+
+          # docker-compose.yml customizado para a submission: usa imagem
+          # publicada no ghcr.io, sem `build:` block (a Engine só faz `up`).
+          cat > /tmp/submission/docker-compose.yml <<EOF
+          # docker-compose.yml — branch \`submission\` (Rinha de Backend 2026).
+          # Imagem publicada por .github/workflows/build-image.yml.
+
+          x-api-base: &api-base
+            image: ghcr.io/${OWNER}/rinha26-api:latest
+            platform: linux/amd64
+            environment:
+              NODE_ENV: production
+              LOG_LEVEL: info
+              PORT: '3000'
+              VECTOR_INDEX_KIND: brute-force
+              REFERENCES_PATH: /app/resources/example-references.json
+              MCC_RISK_PATH: /app/resources/mcc_risk.json
+              NORMALIZATION_PATH: /app/resources/normalization.json
+            volumes:
+              - ./resources:/app/resources:ro
+            expose:
+              - '3000'
+            networks:
+              - rinha
+            deploy:
+              resources:
+                limits:
+                  cpus: '0.45'
+                  memory: '160MB'
+
+          services:
+            api1:
+              <<: *api-base
+              hostname: api1
+            api2:
+              <<: *api-base
+              hostname: api2
+            nginx:
+              image: nginx:1.27-alpine
+              platform: linux/amd64
+              depends_on:
+                - api1
+                - api2
+              ports:
+                - '9999:9999'
+              volumes:
+                - ./nginx.conf:/etc/nginx/nginx.conf:ro
+              networks:
+                - rinha
+              deploy:
+                resources:
+                  limits:
+                    cpus: '0.10'
+                    memory: '30MB'
+
+          networks:
+            rinha:
+              driver: bridge
+          EOF
+
+          cp nginx.conf /tmp/submission/nginx.conf
+          cp info.json /tmp/submission/info.json
+          mkdir -p /tmp/submission/resources
+          # Copia só o que o container precisa em runtime (não o gz de 50MB
+          # ainda — Fase 5).
+          cp resources/normalization.json /tmp/submission/resources/
+          cp resources/mcc_risk.json /tmp/submission/resources/
+          cp resources/example-references.json /tmp/submission/resources/
+
+          # README curto explicando o que é a branch.
+          cat > /tmp/submission/README.md <<'EOF'
+          # Submission — `@rinha26` (Spicy)
+
+          Esta branch contém **apenas** o necessário para a Engine da Rinha
+          executar o teste:
+
+          - `docker-compose.yml` — referencia
+            [ghcr.io/spicy-rinha/rinha26-api](https://github.com/spicy-rinha/rinha-26/pkgs/container/rinha26-api)
+            (publicado por `.github/workflows/build-image.yml` da branch `main`).
+          - `nginx.conf` — load balancer round-robin.
+          - `info.json` — metadados da submissão.
+          - `resources/` — datasets oficiais (sem o `.gz`).
+
+          O **código-fonte** vive na branch [`main`](../../tree/main).
+          EOF
+
+      - name: Configure git
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: Push to `submission`
+        run: |
+          set -euxo pipefail
+          # Recria a branch local "limpa" a partir do tree gerado.
+          rm -rf /tmp/submission/.git
+          cd /tmp/submission
+          git init -b submission
+          git add -A
+          git commit -m "chore(submission): sync from main@${GITHUB_SHA::7}"
+          git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git push -f origin submission

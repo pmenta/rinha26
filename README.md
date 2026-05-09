@@ -129,15 +129,27 @@ Todos os documentos oficiais ficam em `docs/`:
 
 ---
 
+## CI/CD (GitHub Actions)
+
+3 workflows em [`.github/workflows/`](./.github/workflows/):
+
+| Workflow | Trigger | Função |
+|---|---|---|
+| [`ci.yml`](./.github/workflows/ci.yml) | PR + push `main` | `verify` (lint + typecheck + test + build) e `docker-smoke` (compose + k6). |
+| [`build-image.yml`](./.github/workflows/build-image.yml) | push `main`, tags `v*` | Builda e publica `ghcr.io/<owner>/rinha26-api:latest` (linux/amd64). |
+| [`submission.yml`](./.github/workflows/submission.yml) | push `main` | Force-push da branch `submission` (só `docker-compose.yml` + `nginx.conf` + `info.json` + `resources/`, sem código-fonte; conforme [`docs/SUBMISSAO.md`](./docs/SUBMISSAO.md)). |
+
+Detalhes em [`AGENTS.md` §"CI/CD (Fase 3)"](./AGENTS.md#cicd-fase-3).
+
 ## Roadmap
 
-1. **Fase 1 — Boilerplate Nx + DDD/Hexagonal.** *(em andamento)*
-2. **Fase 2 — Infra (`docker-compose` + nginx LB + 2 réplicas) + endpoints stub.**
-3. **Fase 3 — CI/CD (GitHub Actions: lint + typecheck + test + build + smoke k6).**
-4. **Fase 4 — Camadas de harness para o agente + integração com
+1. ✅ **Fase 1 — Boilerplate Nx + DDD/Hexagonal.**
+2. ✅ **Fase 2 — Infra (`docker-compose` + nginx LB + 2 réplicas) + endpoints reais.**
+3. ✅ **Fase 3 — CI/CD GitHub Actions.**
+4. ⏳ **Fase 4 — Camadas de harness para o agente + integração com
    [Archon](https://github.com/coleam00/archon).**
-5. **Fase 5 — Implementações reais comparadas:** brute-force baseline → KD-tree →
-   VP-tree → HNSW; tuning de infra, pré-processamento de dataset, benchmarks.
+5. ⏳ **Fase 5 — Implementações reais comparadas:** brute-force baseline → KD-tree →
+   VP-tree → HNSW; pré-processamento binário do dataset 3M; tuning de infra; benchmarks.
 
 ---
 
