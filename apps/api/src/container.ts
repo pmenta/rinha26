@@ -24,7 +24,12 @@ import {
   StaticNormalizationConfig,
   type VectorIndexPort,
 } from '@rinha26/core';
-import { createVectorIndex, type VectorIndexKind } from '@rinha26/vector-store';
+import {
+  I16BruteForceVectorIndex,
+  createVectorIndex,
+  loadBinaryDataset,
+  type VectorIndexKind,
+} from '@rinha26/vector-store';
 
 import { loadMccRisk } from './loaders/mcc-risk.loader.js';
 import { loadNormalization } from './loaders/normalization.loader.js';
@@ -47,8 +52,16 @@ function defaultPaths() {
   // Quando rodando com `bun --cwd apps/api`, fallback para `../../resources/...`.
   // No container Docker, vamos definir essas envs explicitamente.
   return {
+    /** JSON ou .gz original (3M vetores). Usado quando `VECTOR_INDEX_KIND=brute-force`. */
     references:
       process.env['REFERENCES_PATH'] ?? '../../resources/example-references.json',
+    /**
+     * Bin pré-processado (i16, ~83MB para o dataset oficial). Usado quando
+     * `VECTOR_INDEX_KIND=i16-brute-force`. Gerado por
+     * `bun packages/vector-store/scripts/preprocess.ts` no build do Docker.
+     */
+    referencesBin:
+      process.env['REFERENCES_BIN_PATH'] ?? '../../resources/references.bin',
     mccRisk: process.env['MCC_RISK_PATH'] ?? '../../resources/mcc_risk.json',
     normalization:
       process.env['NORMALIZATION_PATH'] ?? '../../resources/normalization.json',
@@ -91,32 +104,85 @@ export async function createContainer(): Promise<Container> {
   }
   const mccRisk = new FakeMccRiskTable(mccResult.isOk() ? mccResult.unwrap() : {});
 
-  // Mutável apenas durante a janela de lazy load — depois fica estável.
-  let references: readonly ReferenceVector[] = [];
-  let vectorIndex: VectorIndexPort = createVectorIndex(vectorIndexKind, references);
+  // Estado mutável apenas durante a janela de lazy load — depois fica estável.
+  let referenceCount = 0;
+  // Empty references → factory devolve um índice "vazio" só para o caso edge
+  // antes do lazy load completar. Trocado por outro com refs reais ao final.
+  let vectorIndex: VectorIndexPort = createVectorIndex(
+    vectorIndexKind,
+    [] as readonly ReferenceVector[],
+  );
   let ready = false;
+
+  /**
+   * Executa N queries sintéticas para aquecer o JIT do Bun antes de marcar
+   * `/ready=true`. Sem isso, a primeira requisição real demora muito mais
+   * que `proxy_read_timeout` do nginx (5s) — provoca cascata `upstream
+   * temporarily disabled` no LB. Padrão visto em todas as soluções
+   * competitivas (`jairoblatt-rust`, `jairoblatt-node`).
+   *
+   * **N pequeno**: cada query brute-force sobre 3M vetores leva ~50-400ms
+   * (CPU nativo / emulado). 20 queries são suficientes para o JIT compilar
+   * o hot path (V8/JSC: ~3-10 invocações). N maior empurra `/ready` para
+   * dezenas de segundos sem ganho mensurável.
+   */
+  function warmup(idx: VectorIndexPort): void {
+    const query = [
+      0.5, 0.5, 0.5, 0.5, 0.5, -1, -1, 0.5, 0.5, 0, 1, 0, 0.5, 0.005,
+    ] as const;
+    for (let i = 0; i < 20; i += 1) {
+      idx.query(query, 5);
+    }
+  }
 
   // Background load do dataset (não bloqueia o startup do listen).
   void (async () => {
     const t0 = performance.now();
-    const r = await loadReferences(paths.references);
-    if (r.isFail()) {
+    try {
+      if (vectorIndexKind === 'i16-brute-force') {
+        // Caminho otimizado: lê o `references.bin` pré-quantizado direto
+        // como Int16Array + Uint8Array (zero-copy), sem JSON parse.
+        const ds = await loadBinaryDataset(paths.referencesBin);
+        vectorIndex = I16BruteForceVectorIndex.fromQuantized(ds);
+        referenceCount = ds.count;
+        const tLoad = performance.now();
+        warmup(vectorIndex);
+        const tWarm = performance.now();
+        // eslint-disable-next-line no-console
+        console.log(
+          `[@rinha26/api] references.bin carregadas via i16-brute-force ` +
+            `(${referenceCount.toLocaleString()} vetores, ` +
+            `${(ds.fileSizeBytes / 1024 / 1024).toFixed(1)} MB, ` +
+            `load=${(tLoad - t0).toFixed(0)}ms warmup=${(tWarm - tLoad).toFixed(0)}ms). ` +
+            `/ready agora retorna 200.`,
+        );
+      } else {
+        // Caminho legacy: JSON/JSON.gz → ReferenceVector[] em float.
+        const r = await loadReferences(paths.references);
+        if (r.isFail()) {
+          throw new Error(
+            `Falha ao carregar references (${paths.references}): ${r.unwrapFail().message}`,
+          );
+        }
+        const refs = r.unwrap();
+        vectorIndex = createVectorIndex(vectorIndexKind, refs);
+        referenceCount = refs.length;
+        const tLoad = performance.now();
+        warmup(vectorIndex);
+        const tWarm = performance.now();
+        // eslint-disable-next-line no-console
+        console.log(
+          `[@rinha26/api] references carregadas ` +
+            `(${refs.length.toLocaleString()} vetores, ` +
+            `load=${(tLoad - t0).toFixed(0)}ms warmup=${(tWarm - tLoad).toFixed(0)}ms). ` +
+            `/ready agora retorna 200.`,
+        );
+      }
+      ready = true;
+    } catch (e) {
       // eslint-disable-next-line no-console
-      console.error(
-        `[@rinha26/api] Falha ao carregar references (${paths.references}): ` +
-          r.unwrapFail().message,
-      );
-      return;
+      console.error(`[@rinha26/api] ${String(e)}`);
     }
-    references = r.unwrap();
-    vectorIndex = createVectorIndex(vectorIndexKind, references);
-    ready = true;
-    const dt = (performance.now() - t0).toFixed(0);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[@rinha26/api] references carregadas (${references.length} vetores, ${dt}ms). ` +
-        `/ready agora retorna 200.`,
-    );
   })();
 
   // O use case captura `vectorIndex` por closure indireta — usamos um proxy para
@@ -135,6 +201,6 @@ export async function createContainer(): Promise<Container> {
     scoreTransaction,
     readiness: () => ready,
     vectorIndexKind,
-    referenceCount: () => references.length,
+    referenceCount: () => referenceCount,
   };
 }

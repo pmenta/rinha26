@@ -21,10 +21,9 @@
 #   curl http://localhost:9999/ready
 #   k6 run test/smoke.js
 #
-# Para Mac M1/M2 (arm64), o `Dockerfile` declara `--platform=$BUILDPLATFORM` no
-# stage de build mas força a runtime stage em `linux/amd64` (a Rinha roda em
-# Mac Mini Late 2014 = amd64). Construa com:
-#   docker buildx build --platform=linux/amd64 -t rinha26-api ...
+# A imagem da API embute `references.bin` (i16 quantizado, ~83MB) no build
+# stage — não há bind mount de resources em runtime. Isso simplifica a
+# branch `submission` (não precisa enviar dataset junto).
 
 x-api-base: &api-base
   build:
@@ -36,12 +35,11 @@ x-api-base: &api-base
     NODE_ENV: production
     LOG_LEVEL: info
     PORT: '3000'
-    VECTOR_INDEX_KIND: brute-force
-    REFERENCES_PATH: /app/resources/example-references.json
-    MCC_RISK_PATH: /app/resources/mcc_risk.json
-    NORMALIZATION_PATH: /app/resources/normalization.json
-  volumes:
-    - ./resources:/app/resources:ro
+    # Defaults da imagem (podem ser sobrescritos para A/B test):
+    #   VECTOR_INDEX_KIND: i16-brute-force
+    #   REFERENCES_BIN_PATH: /app/resources/references.bin
+    #   MCC_RISK_PATH: /app/resources/mcc_risk.json
+    #   NORMALIZATION_PATH: /app/resources/normalization.json
   expose:
     - '3000'
   networks:

@@ -17,6 +17,10 @@ test-output
 # Outputs do score-simulator (apps/api/test-output/simulator-results.json)
 apps/*/test-output
 
+# Dataset pré-processado (references.bin) — gerado pelo preprocess.ts no build,
+# pesado (~83MB). O arquivo .json.gz oficial fica no repo; o .bin é derivado.
+resources/references.bin
+
 # Cobertura / relatórios
 /coverage
 

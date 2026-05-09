@@ -59,12 +59,8 @@ jobs:
               NODE_ENV: production
               LOG_LEVEL: info
               PORT: '3000'
-              VECTOR_INDEX_KIND: brute-force
-              REFERENCES_PATH: /app/resources/example-references.json
-              MCC_RISK_PATH: /app/resources/mcc_risk.json
-              NORMALIZATION_PATH: /app/resources/normalization.json
-            volumes:
-              - ./resources:/app/resources:ro
+              # Defaults vêm da imagem (i16-brute-force + /app/resources/...).
+              # Resources estão embutidos na imagem (sem bind mount).
             expose:
               - '3000'
             networks:
@@ -107,12 +103,6 @@ jobs:
 
           cp nginx.conf /tmp/submission/nginx.conf
           cp info.json /tmp/submission/info.json
-          mkdir -p /tmp/submission/resources
-          # Copia só o que o container precisa em runtime (não o gz de 50MB
-          # ainda — Fase 5).
-          cp resources/normalization.json /tmp/submission/resources/
-          cp resources/mcc_risk.json /tmp/submission/resources/
-          cp resources/example-references.json /tmp/submission/resources/
 
           # README curto explicando o que é a branch.
           cat > /tmp/submission/README.md <<'EOF'
@@ -123,10 +113,10 @@ jobs:
 
           - `docker-compose.yml` — referencia uma imagem publicada em
             `ghcr.io/<owner>/rinha26-api` por `.github/workflows/build-image.yml`
-            da branch `main`.
+            da branch `main`. **A imagem embute o dataset pré-processado**
+            (`references.bin`, i16 quantizado, ~83MB) — não precisa de bind mount.
           - `nginx.conf` — load balancer round-robin.
           - `info.json` — metadados da submissão.
-          - `resources/` — datasets oficiais (sem o `.gz`).
 
           O **código-fonte** vive na branch [`main`](../../tree/main).
           EOF

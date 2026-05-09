@@ -166,6 +166,8 @@ Decisões não-triviais documentadas em [`docs/adr/`](./docs/adr/README.md):
 - [ADR-001 — Stack inicial: Bun + Elysia + DDD/Hexagonal + Nx + Vitest](./docs/adr/001-stack-inicial.md)
 - [ADR-002 — Política HTTP `default-safe` no `/fraud-score`](./docs/adr/002-default-safe-http-policy.md)
 - [ADR-003 — `BruteForceVectorIndex` como oráculo de equivalência](./docs/adr/003-brute-force-como-oraculo.md)
+- [ADR-004 — Quantização i16 do dataset + formato `references.bin`](./docs/adr/004-quantizacao-i16.md)
+- [ADR-005 — Warmup do JIT + nginx resiliente a cold-start](./docs/adr/005-warmup-e-nginx-resilience.md)
 
 Mapeamento completo das camadas de harness (taxonomia de tarefas, 18 camadas
 L1-L18, DoR por categoria, gates de auto-merge, plano Archon) em
@@ -180,8 +182,10 @@ L1-L18, DoR por categoria, gates de auto-merge, plano Archon) em
    por categoria, ADRs, plano Archon).
 5. ✅ **Fase 4.5 — Pré-requisitos materiais da Fase 5:** contracts test entre
    `VectorIndexPort` impls (L10), bench harness (L11) e score simulator local (L12).
-6. ⏳ **Fase 5 — Implementações reais comparadas:** brute-force baseline → KD-tree →
-   VP-tree → HNSW; pré-processamento binário do dataset 3M; tuning de infra; benchmarks.
+6. 🚧 **Fase 5 — Iter 1 concluída:** quantização i16 + binary format + warmup.
+   `final_score` medido **+1627** (1390 → 3017) com p99 = 3ms e 0 erros HTTP.
+7. ⏳ **Fase 5 — Iterações 2-5:** Bun.serve puro + Unix sockets, WASM SIMD,
+   IVF, Bun FFI/Rust AVX2.
 
 ---
 

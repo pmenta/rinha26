@@ -36,6 +36,15 @@
           "cwd": "{projectRoot}",
           "command": "bun bench/run-bench.ts"
         }
+      },
+      "preprocess": {
+        "executor": "nx:run-commands",
+        "cache": false,
+        "dependsOn": ["build"],
+        "options": {
+          "cwd": "{projectRoot}",
+          "command": "bun scripts/preprocess.ts"
+        }
       }
     }
   },

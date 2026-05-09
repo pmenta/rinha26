@@ -25,8 +25,11 @@ docs
 test/test-data.json
 test/results.json
 
-# Resources são montados via bind mount (não embutir na imagem).
-resources
+# Resources de input vão para o build (preprocess gera references.bin):
+# - normalization.json e mcc_risk.json (kB) entram no runtime direto
+# - references.json.gz (50MB) entra no build, é processado, e descartado
+# - references.bin local (83MB) é regenerado dentro do container
+resources/references.bin
 
 # Logs e temporários
 *.log

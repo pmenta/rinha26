@@ -11,7 +11,8 @@
     "src/**/*.test.ts",
     "src/**/*.spec.ts",
     "src/**/*.d.ts",
-    "bench/**/*.ts"
+    "bench/**/*.ts",
+    "scripts/**/*.ts"
   ],
   "references": [
     { "path": "./tsconfig.lib.json" },

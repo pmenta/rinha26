@@ -457,10 +457,25 @@ path, melhor o p99 (`docs/AVALIACAO.md` §Estratégias).
     `vectorize.ts` e `references.loader.ts`.
 13. **MCC ausente em `mcc_risk.json` → `0.5`** (já em `vectorize.ts → DEFAULT_MCC_RISK`).
 14. **Carregar `references.json.gz` (3M registros, ~284MB JSON) em runtime estoura
-    160MB de RAM por réplica.** A Fase 2 usa `example-references.json` (subset
-    pequeno) via `REFERENCES_PATH` no compose. **Pré-processamento binário
-    (Float32Array de 14d + Uint8Array de label, mmap via `Bun.file().arrayBuffer()`)
-    fica para a Fase 5** junto com a escolha de ANN.
+    160MB de RAM por réplica.** **Resolvido na Iteração 1 da Fase 5** com
+    quantização i16 + binary file (`references.bin`, 83MB) — vide ADR-004.
+    O preprocessor (`bun packages/vector-store/scripts/preprocess.ts`) roda no
+    build do Docker e o `.bin` fica embutido na imagem.
+15. **Cold JIT do Bun na primeira request mata o p99 e provoca cascata
+    `upstream temporarily disabled` no nginx.** Sintoma: smoke k6 falha 100%
+    mesmo com `/ready=200`. **Solução** (ADR-005): (a) warmup de 20 queries
+    sintéticas no `container.ts` antes de marcar `ready=true`; (b)
+    `max_fails=0` no upstream nginx (não tirar réplica do round-robin por
+    falha isolada) + `proxy_read_timeout` 5s.
+16. **Cada query brute-force sobre 3M vetores leva ~50ms em CPU nativo
+    amd64, mas ~400ms em emulação amd64 sobre Mac M (OrbStack/Docker).**
+    Warmup com N=200 levaria 80s no Mac M; N=20 leva ~8s e já basta para
+    JIT compilar o hot path. Em produção (Mac Mini Late 2014 amd64
+    nativo) deve ser ~7× mais rápido.
+17. **`docker-compose.yml` da branch `submission` não precisa mais de
+    bind mount de resources** desde a Iter 1 da Fase 5 — o
+    `references.bin` está embutido na imagem `ghcr.io/.../rinha26-api`.
+    Simplifica o output do `submission.yml`.
 
 ---
 
@@ -717,7 +732,10 @@ contexto perdido entre sessões e manter o agente sempre alinhado.
 
 | Componente | Estado |
 |---|---|
-| `createVectorIndex(kind, refs)` | Fábrica única em `src/factory.ts`. Hoje só `'brute-force'` (re-exportado do core). `'kd-tree'`, `'vp-tree'`, `'hnsw'` lançam erro descritivo até a Fase 5. |
+| `createVectorIndex(kind, refs)` | Fábrica única em `src/factory.ts`. Aceita `'brute-force'` (re-exportado do core) e `'i16-brute-force'` (Iter 1 da Fase 5). `'kd-tree'`/`'vp-tree'`/`'hnsw'` lançam erro descritivo. |
+| `I16BruteForceVectorIndex` | `src/i16/i16-brute-force-vector-index.ts`. Brute-force com vetores quantizados em `i16` (escala 8192). 50% menos RAM, 5× melhor p99 vs `f32` (bench L11). 2 factories: `.fromReferenceVectors(refs)` (testes/contracts) e `.fromQuantized({vectors, labels, count})` (produção, com binary loader). Vide ADR-004. |
+| `quantize.ts` / `binary-format.ts` / `binary-loader.ts` | `src/i16/`. Funções puras de quantização float↔i16; formato binário compacto (header 32B + i16×N + u8×N) com `writeHeader`/`readHeader`; loader zero-copy via `Bun.file().arrayBuffer()` + views typed. |
+| `scripts/preprocess.ts` | CLI Bun: lê `references.json.gz` e produz `references.bin` (~83MB para 3M vetores em ~2.4s). Roda no build do Docker (Dockerfile stage `build`). Target Nx `vector-store:preprocess`. |
 
 #### `__contracts__/` — set comum de testes (L10)
 
@@ -726,6 +744,7 @@ contexto perdido entre sessões e manter o agente sempre alinhado.
 | LCG Park-Miller + dataset/query determinísticos | `src/__contracts__/synthetic-dataset.ts` | Sem dep externa. Reproduz mesma sequência em qualquer máquina. Sentinela `-1` configurável (default 30%), label fraud configurável (default 30%). |
 | `runVectorIndexContracts(opts)` | `src/__contracts__/vector-index.contract.ts` | "Shared examples" pattern — cada impl invoca em `*.contract.spec.ts`. Modo `exact` (top-K bit-a-bit igual ao oráculo) ou `ann` (recall ≥ `recallMin`). 8 testes: rejeições (k≤0, vetor inválido), top-K em 3 queries (1k vetores), k>|dataset|, sentinela `-1`. |
 | `brute-force.contract.spec.ts` | `src/brute-force/brute-force.contract.spec.ts` | Aplica o contract ao oráculo de ADR-003. **8/8 verde**. |
+| `i16-brute-force.contract.spec.ts` | `src/i16/i16-brute-force.contract.spec.ts` | Mesmo contract, agora sobre o `I16BruteForceVectorIndex` em `mode: 'exact'`. **8/8 verde** (quantização não muda a ordem do top-K no dataset determinístico). |
 
 #### `bench/` — harness de benchmark (L11)
 
@@ -821,7 +840,18 @@ container: `docker run --network=host grafana/k6:latest run /test/smoke.js`
 - ✅ **Fase 3** (CI/CD GitHub Actions). 3 workflows, `actionlint` clean. Pipeline validada end-to-end: `pmenta/rinha26` público, imagem pública em `ghcr.io/pmenta/rinha26-api`, branch `submission` auto-gerada, k6 smoke verde.
 - ✅ **Fase 4** (mapeamento das camadas de harness). Taxonomia de tarefas, 18 camadas L1-L18 catalogadas, DoR por categoria, gates de auto-merge, plano Archon, 3 ADRs aceitos.
 - ✅ **Fase 4.5** (pré-requisitos materiais da Fase 5). **L10** contracts test (8/8 verde para brute-force), **L11** bench harness (target Nx + JSON output + smoke spec), **L12** score simulator local (18/18 verde, 8 golden + classify + quantile, runner CLI ponta-a-ponta validado).
-- ⏳ **Fase 5** (implementações sub-lineares de `VectorIndexPort` + pré-processamento binário do `references.json.gz` 3M). DoR formal cumprida.
+- 🚧 **Fase 5 — Iteração 1 (i16 brute-force) concluída** (commits após `d672c38`):
+  - **Quantização i16 + formato binário** (ADR-004): preprocessor produz
+    `references.bin` 83MB no build, embutido na imagem; loader zero-copy
+    em runtime. **5× melhor p99** no bench L11.
+  - **Warmup + nginx resiliente** (ADR-005): 20 queries dummy antes de
+    `/ready=true`; `max_fails=0` + `proxy_read_timeout 5s`.
+  - **Resultado medido (Mac M emulando linux/amd64)**: `final_score = 3017`
+    (vs 1390 antes), p99 = 3.00ms, 38k rps, **0 errors HTTP**, k6 smoke
+    100% verde.
+  - 102 testes verdes (49 core + 56 vector-store + 28 api).
+- ⏳ **Fase 5 — Iterações 2-5** (a definir): runtime HTTP (Bun.serve puro
+  + Unix socket), WASM SIMD, IVF, Bun FFI/Rust AVX2.
 
 ---
 

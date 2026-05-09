@@ -8,3 +8,4 @@
 
 export * from './quantize.js';
 export * from './binary-format.js';
+export * from './binary-loader.js';
