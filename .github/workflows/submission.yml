@@ -121,9 +121,9 @@ jobs:
           Esta branch contém **apenas** o necessário para a Engine da Rinha
           executar o teste:
 
-          - `docker-compose.yml` — referencia
-            [ghcr.io/spicy-rinha/rinha26-api](https://github.com/spicy-rinha/rinha-26/pkgs/container/rinha26-api)
-            (publicado por `.github/workflows/build-image.yml` da branch `main`).
+          - `docker-compose.yml` — referencia uma imagem publicada em
+            `ghcr.io/<owner>/rinha26-api` por `.github/workflows/build-image.yml`
+            da branch `main`.
           - `nginx.conf` — load balancer round-robin.
           - `info.json` — metadados da submissão.
           - `resources/` — datasets oficiais (sem o `.gz`).

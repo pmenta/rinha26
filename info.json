@@ -1,7 +1,7 @@
 {
   "participants": ["Spicy"],
   "social": [],
-  "source-code-repo": "https://github.com/spicy-rinha/rinha-26",
+  "source-code-repo": "https://github.com/pmenta/rinha26",
   "stack": ["bun", "typescript", "elysia", "nginx"],
   "open_to_work": false
 }
