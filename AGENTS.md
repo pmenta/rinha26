@@ -466,17 +466,172 @@ path, melhor o p99 (`docs/AVALIACAO.md` §Estratégias).
 
 ## 12) Camadas de harness para o agente (Fase 4)
 
-> Espaço reservado para mapearmos as "redes de segurança" antes de delegar tarefas para
-> agentes em loop. Inclui (preencher):
->
-> - Validação de payload com Zod no input do use case (sentinelas, ranges).
-> - Golden fixtures: vetorização determinística para os exemplos do PRD do desafio.
-> - Equivalência entre implementações de `VectorIndexPort` em dataset pequeno
->   determinístico (qualquer impl. deve devolver o mesmo top-K do brute-force).
-> - `k6 run test/smoke.js` rápido contra `docker-compose` local.
-> - Brakeman-like (auditoria de deps): `bun audit` ou similar.
-> - Integração com [Archon](https://github.com/coleam00/archon)
->   (`.archon/workflows/idea-to-pr.yaml`, `plan-to-pr.yaml`, etc.).
+> "TDD com um agente de IA é multiplicativo. O agente é bom em gerar testes... e os
+> testes que ele gera viram a rede de segurança das mudanças que ele mesmo faz depois.
+> É um ciclo virtuoso: testes permitem velocidade, velocidade gera mais testes."
+> ([Akita, 2026][akita-post])
+
+Esta seção é o **mapa do harness** — as redes de segurança que precisam estar no
+lugar antes de delegar trabalho repetitivo a um agente em loop. Está dividida em:
+
+1. Taxonomia de tarefas (quem decide o quê).
+2. Camadas de harness (existentes ✓ vs a construir ⏳).
+3. Definition of Ready (DoR) por categoria de tarefa.
+4. Gates de auto-merge (quando confiar no agente sem revisão humana).
+5. ADRs (Architecture Decision Records).
+6. Plano de integração com [Archon](https://github.com/coleam00/archon).
+
+### 12.1) Taxonomia de tarefas
+
+Inspirado em XP + nas categorias do post do Akita ("O Que a IA Faz Bem (E o Que
+Faz Mal)"). Cada categoria define **quem decide o quê** e **qual harness é
+obrigatório**.
+
+| Categoria                                     | Quem decide       | Quem implementa     | Harness obrigatório                                      | Auto-merge? |
+|-----------------------------------------------|-------------------|---------------------|----------------------------------------------------------|-------------|
+| **A. Boilerplate / scaffolding**              | Humano            | Agente              | `bun run verify` verde                                   | Não         |
+| **B. Implementação derivada de plano claro**  | Humano (plano)    | Agente              | `verify` + DoR cumprido                                  | Não         |
+| **C. Refactoring puro (sem mudar comportamento)** | Humano (motivo)| Agente              | `verify` + cobertura ≥ antes + zero churn em fixtures golden | Sim, se diff < 200 LOC |
+| **D. Bugfix com repro**                       | Humano (issue)    | Agente              | `verify` + **TDD obrigatório** (commit do teste vermelho antes do fix) | Não |
+| **E. Decisão arquitetural**                   | Humano            | Humano + Agente     | ADR escrito antes de qualquer código                     | Não         |
+| **F. Otimização de perf**                     | Humano (alvo)     | Agente              | `verify` + bench harness mostra ganho ≥ 5% sem regressão de detecção | Não         |
+| **G. Pesquisa / spike**                       | Humano (pergunta) | Agente              | Documentar achados; não merge                            | Não         |
+| **H. Tunning de infra (Dockerfile, nginx, env)** | Humano + Agente | Humano + Agente   | `docker compose up` + `k6 smoke` verde                   | Não         |
+
+Para o **escopo da Rinha 2026**, as tarefas mais frequentes serão **C, D, F e H**:
+- C: extrair concerns da vetorização, do índice, da carga de resources.
+- D: bugs de detecção (FN/FP num cenário específico) ou de p99 (lentidão).
+- F: tunning do brute-force baseline; substituição por KD-tree/VP-tree/HNSW.
+- H: ajuste do split CPU/memória entre nginx/api1/api2; flags do Bun; nginx params.
+
+### 12.2) Camadas de harness — checklist do que existe e do que falta
+
+| Camada                                         | Estado | Localização |
+|------------------------------------------------|:-----:|---|
+| **L1.** Schema Zod na borda HTTP (`/fraud-score`) | ✅ | `apps/api/src/routes/fraud-score.ts` |
+| **L2.** Política `default-safe` na borda HTTP (qualquer falha → 200) | ✅ | `apps/api/src/routes/fraud-score.ts` (`@fileoverview`) |
+| **L3.** Specs unitárias do domínio (entities/policies/value-objects) | ✅ | `packages/core/src/domain/**/*.spec.ts` (33 testes) |
+| **L4.** Specs do use case com fakes | ✅ | `packages/core/src/application/score-transaction/score-transaction.use-case.spec.ts` |
+| **L5.** Specs dos adapters (HTTP em-memória) | ✅ | `apps/api/src/routes/*.spec.ts` |
+| **L6.** Specs dos loaders (lendo `resources/` real) | ✅ | `apps/api/src/loaders/loaders.spec.ts` |
+| **L7.** Golden fixtures bit-a-bit dos exemplos do PRD (vetorização) | ✅ | `packages/core/src/domain/policies/vectorize.spec.ts` |
+| **L8.** Lint + typecheck + build em todo commit (CI) | ✅ | `.github/workflows/ci.yml` |
+| **L9.** Smoke `k6 test/smoke.js` em todo commit (CI) | ✅ | `.github/workflows/ci.yml` (job `docker-smoke`) |
+| **L10.** Spec de equivalência: toda `VectorIndexPort` impl produz o mesmo top-K que `BruteForceVectorIndex` em dataset determinístico | ⏳ Fase 5 | criar `packages/vector-store/src/__contracts__/vector-index.contract.spec.ts` (parametrizado por kind) |
+| **L11.** Bench harness (Vitest bench ou tinybench) — tempo de query KNN, tempo de build de índice, memória estimada por `process.memoryUsage()`, output JSON | ⏳ Fase 5 | criar `packages/vector-store/bench/` |
+| **L12.** Score simulator local — roda `test/test-data.json` contra a API local, calcula `final_score` segundo `docs/AVALIACAO.md`, sem precisar de k6 | ⏳ Fase 4.5 / 5 | criar `apps/api/scripts/score-simulator.ts` |
+| **L13.** Property-based test (`fast-check`) — invariantes de vetorização: clamp01 ⊆ [0,1], `-1` só nos índices 5/6, output sempre length=14 | ⏳ Opcional Fase 5 | adicionar em `vectorize.spec.ts` |
+| **L14.** Bench guard no CI — falha se uma impl regrediu > 5% de p99 vs baseline | ⏳ Fase 5 | comparar `bench-results.json` PR vs `main` |
+| **L15.** Audit de deps (`bun audit` / `osv-scanner`) | ⏳ Fase 4 ou 5 | adicionar step no `ci.yml` |
+| **L16.** Container scan (Trivy / Grype) na imagem do `build-image.yml` | ⏳ Opcional | adicionar step no `build-image.yml` |
+| **L17.** Workflow Archon `idea-to-pr` / `plan-to-pr` configurado | ⏳ Fase 4.6 | criar `.archon/workflows/*.yaml` |
+| **L18.** ADR template + primeiros 3 ADRs (stack, política HTTP, brute-force como oráculo) | ⏳ Fase 4.2-4.4 | `docs/adr/` |
+
+> **Critério para começar a Fase 5**: L10 + L11 + L12 prontos. Sem eles, não é
+> possível afirmar com segurança que uma nova `VectorIndexPort` impl é "melhor"
+> que o baseline.
+
+### 12.3) Definition of Ready (DoR) por categoria
+
+A **DoR** é o checklist mínimo antes de começar a implementar. **Sem isso, o
+agente não deve abrir código** — primeiro completa-se a DoR (humano + agente
+em pair).
+
+#### DoR — Nova `VectorIndexPort` impl (categoria F)
+
+- [ ] Issue/plano com nome do algoritmo (KD-tree / VP-tree / HNSW / IVF / LSH / …).
+- [ ] Justificativa: por que essa impl, qual o ganho esperado em p99 e/ou memória.
+- [ ] **L10** já existe (set comum de testes de equivalência) — caso contrário,
+      construir antes.
+- [ ] **L11** já existe (bench harness) — caso contrário, construir antes.
+- [ ] Hipótese explícita: "Esperamos ganho de Xms no p99 com perda de detecção ≤ Y%".
+- [ ] Critério de aceitação: testes de equivalência verdes, bench mostra ganho ≥ X%,
+      `k6 smoke` continua verde.
+- [ ] ADR rascunhado (template MADR) registrando a decisão.
+
+#### DoR — Bugfix de detecção (categoria D, FN ou FP num cenário)
+
+- [ ] **Repro determinístico**: payload concreto + estado do dataset que causa o
+      bug, em arquivo `*.spec.ts` no domínio relevante.
+- [ ] Teste **vermelho** comitado primeiro (commit separado do fix).
+- [ ] Hipótese sobre a causa-raiz documentada na issue/PR.
+- [ ] Após fix: teste verde + nenhuma regressão em fixtures golden.
+
+#### DoR — Otimização de p99 (categoria F, sem trocar algoritmo)
+
+- [ ] Bench atual (`bench-results.json` referência) capturado.
+- [ ] Hipótese: "Esta mudança reduz Xms porque Y".
+- [ ] Bench novo após mudança, comparado bit-a-bit com o anterior.
+- [ ] Sem regressão em detecção (mesmo top-K determinístico).
+
+#### DoR — Mudança de infra (categoria H, Dockerfile/nginx/compose)
+
+- [ ] Justificativa: o que melhora (perf, mem, custo de build, segurança, …).
+- [ ] `docker compose up --build` local funciona pós-mudança.
+- [ ] `k6 smoke` continua verde.
+- [ ] Soma de `cpus` + `memory` no compose continua ≤ 1 CPU + 350 MB.
+
+#### DoR — Decisão arquitetural (categoria E)
+
+- [ ] ADR escrito **antes** de qualquer linha de código.
+- [ ] Pelo menos uma alternativa avaliada e rejeitada com justificativa.
+- [ ] Impacto em testes/perf/infra documentado.
+
+### 12.4) Gates de auto-merge
+
+Hoje **nenhum auto-merge**. Quando o repo tiver tráfego suficiente para
+justificar, considerar habilitar para a categoria **C (Refactoring puro)** com:
+
+- Diff ≤ 200 LOC.
+- Apenas em arquivos sem alteração de fixture golden.
+- Sem alteração em `domain/policies/*.ts` (a regra é o produto — sempre humano).
+- `verify` + `docker-smoke` + cobertura igual ou superior à de `main`.
+- Mensagem de commit começa com `refactor:` ou `style:`.
+
+### 12.5) ADRs
+
+Diretório [`docs/adr/`](../docs/adr/README.md) com formato
+[MADR](https://adr.github.io/madr/) curto (1 página por decisão). Template em
+[`docs/adr/000-template.md`](../docs/adr/000-template.md).
+
+ADRs criados (Fase 4):
+
+- [`001-stack-inicial.md`](../docs/adr/001-stack-inicial.md) — Bun + Elysia +
+  DDD/Hexagonal + Nx + Vitest. Status: `accepted`.
+- [`002-default-safe-http-policy.md`](../docs/adr/002-default-safe-http-policy.md)
+  — `200 default-safe` no `/fraud-score`. Status: `accepted`.
+- [`003-brute-force-como-oraculo.md`](../docs/adr/003-brute-force-como-oraculo.md)
+  — `BruteForceVectorIndex` é o oráculo de equivalência para futuras impls.
+  Status: `accepted`.
+
+Quando criar um novo: `cp docs/adr/000-template.md docs/adr/<NNN>-<slug>.md`,
+preencher, comitar **junto** com a mudança técnica que ele justifica.
+
+### 12.6) Plano Archon
+
+[Archon](https://github.com/coleam00/archon) (`Mit`, ~21k stars) é um workflow
+engine para agentes de IA — define DAGs YAML em `.archon/workflows/` que a CLI
+executa em git worktrees isolados. **Não vamos instalar agora** (requer Claude
+Code CLI + setup de credenciais), mas vamos mapear os workflows que faremos
+sentido aqui:
+
+| Workflow Archon                | Disparador típico                                                | Pré-requisitos no projeto |
+|--------------------------------|------------------------------------------------------------------|---------------------------|
+| `archon-fix-github-issue`      | Issue com label `bug` (ex.: "FN alto em MCC 7995")               | DoR §12.3 cumprida; teste vermelho de repro pronto |
+| `archon-feature-development`   | Plano em issue `Add HNSW VectorIndexPort impl`                   | DoR de "Nova impl" cumprida; L10 + L11 prontas |
+| `archon-refactor-safely`       | "Extract `vectorize-helpers.ts` from policy"                     | Diff esperado ≤ 200 LOC |
+| `archon-comprehensive-pr-review` | Antes de merge em PRs grandes (categoria E ou F)               | ADR escrito |
+| `archon-resolve-conflicts`     | Merge conflicts em PRs paralelos                                 | — |
+
+**Quando ligar Archon**: a partir do momento em que o ritmo de PRs justificar
+(estimativa: 5+ PRs/semana ou >2 PRs/dia). Antes disso, o overhead de setup
+não compensa — a disciplina XP descrita em §1-§14 já é suficiente.
+
+**Onde será integrado** (futuro):
+- `.archon/workflows/*.yaml` no repo (commitado, todo time roda igual).
+- `bunx archon workflow run ...` ou via CLI Claude Code.
+- O workflow Archon executa em **git worktree** — não interfere no estado
+  local, e múltiplas tarefas rodam em paralelo.
 
 ---
 
@@ -626,8 +781,8 @@ container: `docker run --network=host grafana/k6:latest run /test/smoke.js`
 
 - ✅ **Fase 1** (boilerplate Nx + DDD/Hexagonal). 56 testes verdes. `bun run verify` passa.
 - ✅ **Fase 2** (infra Docker). 61 testes verdes. Stack `docker compose up --build` sobe e k6 smoke passa 100%.
-- ✅ **Fase 3** (CI/CD GitHub Actions). 3 workflows commitados (`ci.yml`, `build-image.yml`, `submission.yml`). `actionlint` clean. **Pendente:** push para repo GitHub público para validar execução real.
-- ⏳ **Fase 4** (camadas de harness do agente + Archon).
+- ✅ **Fase 3** (CI/CD GitHub Actions). 3 workflows, `actionlint` clean. **Pendente:** push para repo público para validar execução real.
+- ✅ **Fase 4** (mapeamento das camadas de harness). Taxonomia de tarefas, 18 camadas L1-L18 catalogadas (10 ✓ + 8 ⏳), DoR por categoria, gates de auto-merge, plano Archon, 3 ADRs aceitos. **Próximo passo material:** L10 (contracts test entre `VectorIndexPort` impls), L11 (bench harness) e L12 (score simulator local) — pré-requisito para começar a Fase 5.
 - ⏳ **Fase 5** (implementações sub-lineares de `VectorIndexPort` + pré-processamento binário do `references.json.gz` 3M).
 
 ---

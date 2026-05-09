@@ -141,13 +141,27 @@ Todos os documentos oficiais ficam em `docs/`:
 
 Detalhes em [`AGENTS.md` §"CI/CD (Fase 3)"](./AGENTS.md#cicd-fase-3).
 
+## Decisões de arquitetura (ADRs)
+
+Decisões não-triviais documentadas em [`docs/adr/`](./docs/adr/README.md):
+
+- [ADR-001 — Stack inicial: Bun + Elysia + DDD/Hexagonal + Nx + Vitest](./docs/adr/001-stack-inicial.md)
+- [ADR-002 — Política HTTP `default-safe` no `/fraud-score`](./docs/adr/002-default-safe-http-policy.md)
+- [ADR-003 — `BruteForceVectorIndex` como oráculo de equivalência](./docs/adr/003-brute-force-como-oraculo.md)
+
+Mapeamento completo das camadas de harness (taxonomia de tarefas, 18 camadas
+L1-L18, DoR por categoria, gates de auto-merge, plano Archon) em
+[`AGENTS.md` §"12) Camadas de harness para o agente (Fase 4)"](./AGENTS.md#12-camadas-de-harness-para-o-agente-fase-4).
+
 ## Roadmap
 
 1. ✅ **Fase 1 — Boilerplate Nx + DDD/Hexagonal.**
 2. ✅ **Fase 2 — Infra (`docker-compose` + nginx LB + 2 réplicas) + endpoints reais.**
 3. ✅ **Fase 3 — CI/CD GitHub Actions.**
-4. ⏳ **Fase 4 — Camadas de harness para o agente + integração com
-   [Archon](https://github.com/coleam00/archon).**
+4. ✅ **Fase 4 — Mapeamento das camadas de harness** (taxonomia de tarefas, DoR
+   por categoria, ADRs, plano Archon). **Próximas camadas materiais a construir:**
+   contracts test entre `VectorIndexPort` impls (L10), bench harness (L11) e
+   score simulator local (L12) — pré-requisito da Fase 5.
 5. ⏳ **Fase 5 — Implementações reais comparadas:** brute-force baseline → KD-tree →
    VP-tree → HNSW; pré-processamento binário do dataset 3M; tuning de infra; benchmarks.
 
