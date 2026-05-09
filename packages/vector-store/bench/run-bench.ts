@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import { BruteForceVectorIndex } from '@rinha26/core';
 
+import { I16BruteForceVectorIndex } from '../src/i16/i16-brute-force-vector-index.js';
 import {
   type BenchSnapshot,
   type BenchTarget,
@@ -80,7 +81,11 @@ const targets: readonly BenchTarget[] = [
     kind: 'brute-force',
     factory: (refs) => new BruteForceVectorIndex(refs),
   },
-  // Futuras impls: { kind: 'kd-tree', factory: (refs) => new KdTreeIndex(refs) }, …
+  {
+    kind: 'i16-brute-force',
+    factory: (refs) => I16BruteForceVectorIndex.fromReferenceVectors(refs),
+  },
+  // Futuras impls: { kind: 'vp-tree', factory: (refs) => new VpTreeIndex(refs) }, …
 ];
 
 const snapshot = runBenchSuite(targets, {
