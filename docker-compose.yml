@@ -1,0 +1,50 @@
+# docker-compose.yml — branch `submission` (Rinha de Backend 2026).
+# Imagem publicada por .github/workflows/build-image.yml.
+
+x-api-base: &api-base
+  image: ghcr.io/pmenta/rinha26-api:latest
+  platform: linux/amd64
+  environment:
+    NODE_ENV: production
+    LOG_LEVEL: info
+    PORT: '3000'
+    # Defaults vêm da imagem (i16-brute-force + /app/resources/...).
+    # Resources estão embutidos na imagem (sem bind mount).
+  expose:
+    - '3000'
+  networks:
+    - rinha
+  deploy:
+    resources:
+      limits:
+        cpus: '0.45'
+        memory: '160MB'
+
+services:
+  api1:
+    <<: *api-base
+    hostname: api1
+  api2:
+    <<: *api-base
+    hostname: api2
+  nginx:
+    image: nginx:1.27-alpine
+    platform: linux/amd64
+    depends_on:
+      - api1
+      - api2
+    ports:
+      - '9999:9999'
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - rinha
+    deploy:
+      resources:
+        limits:
+          cpus: '0.10'
+          memory: '30MB'
+
+networks:
+  rinha:
+    driver: bridge

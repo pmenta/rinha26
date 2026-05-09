@@ -1,0 +1,16 @@
+{
+  "participants": [
+    "pmenta"
+  ],
+  "social": [
+    "https://github.com/pmenta/",
+    "https://www.linkedin.com/in/joaomartinsdev/"
+  ],
+  "source-code-repo": "https://github.com/pmenta/rinha26",
+  "stack": [
+    "bun",
+    "typescript",
+    "nginx"
+  ],
+  "open_to_work": false
+}
