@@ -432,14 +432,35 @@ path, melhor o p99 (`docs/AVALIACAO.md` §Estratégias).
    `Err` (HTTP 5xx/4xx) custa **5×** na taxa ponderada de `docs/AVALIACAO.md` e ainda
    conta na taxa de falhas (corte em 15%). Trocar `Err` por possível `FN` (peso 3)
    é matematicamente vantajoso na fórmula. Reavaliar quando p99 estiver folgado.
-7. *(placeholder)* Resources de 16 MB+ não devem entrar na imagem se houver bind-mount
-   no compose; verificar `Dockerfile` da Fase 2.
-8. *(placeholder)* Bun + `--smol` reduz consumo de memória — relevante dado o limite
-   global de 350 MB.
-9. *(placeholder)* O dataset usa o sentinela `-1` nas posições 5 e 6 — **não filtrar
-   nem substituir** ao indexar (`docs/DATASET.md`).
-10. *(placeholder)* MCC ausente em `mcc_risk.json` → usar `0.5`, **não `0.0`**
-    (já encapsulado em `vectorize.ts → DEFAULT_MCC_RISK`).
+7. **Não usar `oven/bun:*-alpine` no Dockerfile.** O Nx 22 e alguns nativos do
+   monorepo não distribuem build `linux-*-musl` para todas as arquiteturas
+   (especificamente `linux-arm64-musl` quebra). Use `oven/bun:1.1.29` (Debian)
+   no `deps/build` e `oven/bun:1.1.29-slim` no `runtime` — ambos glibc.
+8. **Não chamar `nx` dentro do container Docker.** Mesmo com a imagem certa,
+   evitar — o native binding do Nx para a plataforma do container precisa ser
+   resolvido no install dentro do próprio container, e isso atrita com lockfile.
+   Solução: chamar `bun x tsc --build packages/*/tsconfig.build.json` direto
+   no stage `build`, sem Nx wrapper.
+9. **`bun install --frozen-lockfile` no Dockerfile resolve native bindings da
+   plataforma host.** Como o `bun.lockb` é gerado no Mac (arm64-darwin) e o
+   container roda em `linux/amd64`, `--frozen-lockfile` quebra. **Solução**:
+   `bun install` puro no container (sem `--frozen-lockfile`). A reprodutibilidade
+   fica garantida pelo `package.json` + range exato de versões do `@nx/*`.
+10. **Bun + `--smol` reduz consumo de heap.** Útil dado o limite global de 350 MB.
+    Já aplicado no `CMD` do `Dockerfile`.
+11. **k6 dentro de Docker para testar `localhost:9999`**: usar `--network=host`
+    (funciona no Linux nativo e no OrbStack/Mac que faz host-network virtual).
+    `--add-host=localhost:host-gateway` **não funciona** porque o resolver Go do
+    k6 ignora `/etc/hosts` para `localhost` e cai direto em `127.0.0.1`.
+12. *(placeholder)* O dataset usa o sentinela `-1` nas posições 5 e 6 — **não
+    filtrar nem substituir** ao indexar (`docs/DATASET.md`). Já tratado em
+    `vectorize.ts` e `references.loader.ts`.
+13. **MCC ausente em `mcc_risk.json` → `0.5`** (já em `vectorize.ts → DEFAULT_MCC_RISK`).
+14. **Carregar `references.json.gz` (3M registros, ~284MB JSON) em runtime estoura
+    160MB de RAM por réplica.** A Fase 2 usa `example-references.json` (subset
+    pequeno) via `REFERENCES_PATH` no compose. **Pré-processamento binário
+    (Float32Array de 14d + Uint8Array de label, mmap via `Bun.file().arrayBuffer()`)
+    fica para a Fase 5** junto com a escolha de ANN.
 
 ---
 
@@ -549,24 +570,44 @@ contexto perdido entre sessões e manter o agente sempre alinhado.
 | Componente | Arquivo | Notas |
 |---|---|---|
 | Bootstrap | `src/main.ts` | Lê `PORT` (default `3000`), monta container, expõe rotas. |
-| Container/wiring | `src/container.ts` | Hoje injeta `OFFICIAL_*` embutidos + `references=[]`. Fase 2 substitui por `ResourceLoader` real (gzip stream). |
+| Container/wiring | `src/container.ts` | Carrega `mcc_risk.json` + `normalization.json` no startup (bloqueante); `references` em **background** (lazy). Proxy de `VectorIndexPort` permite swap atrás dos lazy loads. Falha de `mcc_risk` cai para tabela vazia (warn). |
+| Loader `readJsonWithZod` | `src/loaders/read-json-with-zod.ts` | Lê arquivo (com `.gz` transparente via `DecompressionStream('gzip')`), parse JSON, valida Zod. Devolve `IResult`. Usa `Bun.file` em runtime e `fs/promises + zlib` no Vitest/Node. |
+| Loader normalização | `src/loaders/normalization.loader.ts` | Aplica `NormalizationSchema` do core. |
+| Loader MCC | `src/loaders/mcc-risk.loader.ts` | `Record<string, number in [0,1]>`. |
+| Loader referências | `src/loaders/references.loader.ts` | Array `{vector:number[14], label}`. Aceita sentinela `-1`. |
 | `GET /ready` | `src/routes/ready.ts` | `200 {status:"ok"}` quando `refs.length > 0`; `503 {status:"loading"}` enquanto carrega. |
 | `POST /fraud-score` | `src/routes/fraud-score.ts` | Valida via Zod (`ScoreTransactionInputSchema`); chama use case; **default-safe `200 {approved:true, fraud_score:0}` em qualquer falha** (ver hurdle §11.6). |
 
-#### Testes do `apps/api` (5 testes, 2 specs)
+#### Testes do `apps/api` (10 testes, 3 specs)
 
 | Spec | Cobertura |
 |---|---|
 | `routes/ready.spec.ts` | 200 quando ready / 503 quando loading. Usa `Elysia.handle(Request)` em-memória. 2 testes. |
 | `routes/fraud-score.spec.ts` | Caso fraudulento do PRD com 5 fraud-vizinhos → score 1; payload inválido → default-safe; índice vazio → default-safe. 3 testes. |
+| `loaders/loaders.spec.ts` | Lê e valida `normalization.json`, `mcc_risk.json`, `example-references.json` e o **`references.json.gz` real (3M vetores em ~6.7s no Vitest/Node)**. 5 testes. |
+
+### Infra (Fase 2)
+
+| Componente | Arquivo | Notas |
+|---|---|---|
+| Dockerfile multi-stage | `apps/api/Dockerfile` | `oven/bun:1.1.29` (deps/build) → `oven/bun:1.1.29-slim` (runtime). Tudo `linux/amd64`. Runtime usa `bun --smol`. Sem Nx no container — builda com `tsc -b` direto. |
+| `.dockerignore` | `.dockerignore` | Exclui `.git`, `dist`, `node_modules`, `resources` (vai por bind mount), `docs`. |
+| nginx LB | `nginx.conf` | Round-robin `api1:3000`/`api2:3000`. Worker único, 1024 conn. `proxy_buffering off`, keepalive upstream. Timeouts 1-2s coerentes com `2001ms` do k6. |
+| docker-compose | `docker-compose.yml` | nginx (0.10cpu/30MB) + api1 + api2 (0.45cpu/160MB cada). Total **0.95cpu/350MB** (limite oficial). `bridge` net, `linux/amd64`, imagens públicas. Bind mount de `./resources`. |
+
+**Smoke validado**: `docker compose up --build` + `k6 run test/smoke.js` →
+**20/20 checks verdes**, p(95) = ~19ms com brute-force sobre 100 vetores
+do `example-references.json`. Para rodar k6 contra `localhost:9999` via
+container: `docker run --network=host grafana/k6:latest run /test/smoke.js`
+(ver hurdle §11.11).
 
 ### Estado das fases
 
-- ✅ **Fase 1** (boilerplate Nx + DDD/Hexagonal). 56 testes verdes (49+2+5). `bun run verify` passa.
-- ⏳ **Fase 2** (infra: Dockerfile + nginx + docker-compose + leitura real dos resources).
+- ✅ **Fase 1** (boilerplate Nx + DDD/Hexagonal). 56 testes verdes. `bun run verify` passa.
+- ✅ **Fase 2** (infra Docker). 61 testes verdes (49+2+10). Stack `docker compose up --build` sobe e k6 smoke passa 100%.
 - ⏳ **Fase 3** (CI/CD GitHub Actions).
 - ⏳ **Fase 4** (camadas de harness do agente + Archon).
-- ⏳ **Fase 5** (implementações sub-lineares de `VectorIndexPort` + tuning).
+- ⏳ **Fase 5** (implementações sub-lineares de `VectorIndexPort` + pré-processamento binário do `references.json.gz` 3M).
 
 ---
 

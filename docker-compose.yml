@@ -1,0 +1,87 @@
+# docker-compose.yml — submissão da Rinha de Backend 2026 (Spicy / @rinha26).
+#
+# Restrições oficiais (`docs/ARQUITETURA.md`):
+#   - Soma dos limites: ≤ 1 CPU + 350 MB de memória.
+#   - Modo de rede: `bridge`. Sem `host` / `privileged`.
+#   - Imagens públicas, compatíveis com `linux/amd64`.
+#   - Porta exposta: 9999 (no nginx; api fica interna).
+#
+# Orçamento atual de recursos:
+#
+#   service   |  cpus | memory | papel
+#   --------- | ----- | ------ | ----------------------------------
+#   nginx     |  0.10 |  30MB  | LB round-robin
+#   api1      |  0.45 | 160MB  | réplica 1 (Bun + Elysia)
+#   api2      |  0.45 | 160MB  | réplica 2 (Bun + Elysia)
+#   --------- | ----- | ------ | ----------------------------------
+#   TOTAL     |  1.00 | 350MB  | dentro do limite oficial
+#
+# Como subir localmente:
+#   docker compose up --build
+#   curl http://localhost:9999/ready
+#   k6 run test/smoke.js
+#
+# Para Mac M1/M2 (arm64), o `Dockerfile` declara `--platform=$BUILDPLATFORM` no
+# stage de build mas força a runtime stage em `linux/amd64` (a Rinha roda em
+# Mac Mini Late 2014 = amd64). Construa com:
+#   docker buildx build --platform=linux/amd64 -t rinha26-api ...
+
+x-api-base: &api-base
+  build:
+    context: .
+    dockerfile: apps/api/Dockerfile
+  image: rinha26-api:dev
+  platform: linux/amd64
+  environment:
+    NODE_ENV: production
+    LOG_LEVEL: info
+    PORT: '3000'
+    VECTOR_INDEX_KIND: brute-force
+    REFERENCES_PATH: /app/resources/example-references.json
+    MCC_RISK_PATH: /app/resources/mcc_risk.json
+    NORMALIZATION_PATH: /app/resources/normalization.json
+  volumes:
+    - ./resources:/app/resources:ro
+  expose:
+    - '3000'
+  networks:
+    - rinha
+  deploy:
+    resources:
+      limits:
+        cpus: '0.45'
+        memory: '160MB'
+
+services:
+  api1:
+    <<: *api-base
+    container_name: rinha26-api1
+    hostname: api1
+
+  api2:
+    <<: *api-base
+    container_name: rinha26-api2
+    hostname: api2
+
+  nginx:
+    image: nginx:1.27-alpine
+    platform: linux/amd64
+    container_name: rinha26-nginx
+    depends_on:
+      - api1
+      - api2
+    ports:
+      - '9999:9999'
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - rinha
+    deploy:
+      resources:
+        limits:
+          cpus: '0.10'
+          memory: '30MB'
+
+networks:
+  rinha:
+    driver: bridge

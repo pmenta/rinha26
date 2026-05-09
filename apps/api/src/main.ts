@@ -22,6 +22,6 @@ app.listen(port, ({ hostname, port: actualPort }) => {
   // eslint-disable-next-line no-console
   console.log(
     `[@rinha26/api] listening on http://${hostname}:${actualPort} ` +
-      `(vector-index=${container.vectorIndexKind}, references=${container.referenceCount})`,
+      `(vector-index=${container.vectorIndexKind}, references=${container.referenceCount()})`,
   );
 });

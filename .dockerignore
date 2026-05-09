@@ -1,0 +1,42 @@
+# Tudo que NÃO deve ir para o Docker daemon.
+
+# Git / IDE
+.git
+.gitignore
+.vscode
+.idea
+.cursor
+
+# Build/cache
+**/dist
+**/out-tsc
+**/test-output
+**/*.tsbuildinfo
+.nx
+node_modules
+
+# Docs / desenvolvimento
+docs
+*.md
+.prettierrc
+.prettierignore
+
+# Tests / fixtures (são copiados via bind mount no docker-compose, se necessário)
+test/test-data.json
+test/results.json
+
+# Resources são montados via bind mount (não embutir na imagem).
+resources
+
+# Logs e temporários
+*.log
+.DS_Store
+.env
+.env.local
+.env.*.local
+
+# Dockerfiles (evita layer com Dockerfile dentro)
+**/Dockerfile
+.dockerignore
+docker-compose.yml
+nginx.conf

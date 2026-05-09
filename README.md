@@ -26,34 +26,58 @@ Submissão da equipe **Spicy** para a [Rinha de Backend 2026](./docs/README.md) 
 
 ## Como rodar
 
-> **Pré-requisitos:** [Bun ≥ 1.1.29](https://bun.sh) e (opcional) [k6](https://k6.io)
-> para rodar o smoke/avaliação. Docker virá na Fase 2.
+> **Pré-requisitos:** [Bun ≥ 1.1.29](https://bun.sh), Docker (com OrbStack ou Docker
+> Desktop) e (opcional) [k6](https://k6.io) localmente.
+
+### Desenvolvimento local (sem Docker)
 
 ```bash
-# Instala dependências (Bun workspaces)
-bun install
-
-# Verifica todo o monorepo (lint + typecheck + test + build)
-bun run verify
+bun install                 # instala dependências (Bun workspaces)
+bun run verify              # lint + typecheck + test + build (gate completo)
 
 # Comandos individuais
-bun run lint        # Nx run-many -t lint
-bun run typecheck   # Nx run-many -t typecheck
-bun run test        # Nx run-many -t test
-bun run build       # Nx run-many -t build
-bun run graph       # abre Nx graph no navegador
+bun run lint
+bun run typecheck
+bun run test
+bun run build
+bun run graph               # abre Nx graph no navegador
 
 # Subset por projeto
 bunx nx test core
 bunx nx affected -t test    # só o que mudou desde `main`
+
+# Subir a API via Bun direto (sem Docker, na porta 9999)
+cd apps/api
+PORT=9999 \
+  REFERENCES_PATH=../../resources/example-references.json \
+  bun run --smol src/main.ts
 ```
 
-A partir da Fase 2 será possível:
+### Stack completa (Docker — submissão oficial)
 
 ```bash
+# Sobe nginx (LB) + 2 réplicas da API (porta 9999, total ≤ 1 CPU + 350 MB)
 docker compose up --build
-k6 run test/smoke.js        # smoke local
-k6 run test/test.js         # avaliação oficial
+
+# Em outro terminal:
+curl http://localhost:9999/ready
+curl -X POST http://localhost:9999/fraud-score \
+  -H 'content-type: application/json' \
+  -d @<(jq '.[0]' resources/example-payloads.json)
+```
+
+### Smoke / avaliação (k6)
+
+```bash
+# Smoke local (5 reqs, valida formato)
+k6 run test/smoke.js
+
+# Avaliação oficial (~5000 reqs, gera test/results.json)
+k6 run test/test.js
+
+# Sem k6 instalado? Use container (network=host funciona em Linux e OrbStack):
+docker run --rm --network=host -v $(pwd)/test:/test grafana/k6:latest \
+  run /test/smoke.js
 ```
 
 ---
