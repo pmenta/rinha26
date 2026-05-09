@@ -7,6 +7,7 @@
 import { Elysia } from 'elysia';
 
 import { createContainer } from './container.js';
+import { diagnosticsController } from './routes/diagnostics.js';
 import { fraudScoreController } from './routes/fraud-score.js';
 import { readyController } from './routes/ready.js';
 
@@ -16,7 +17,8 @@ const container = await createContainer();
 
 const app = new Elysia()
   .use(readyController(container.readiness))
-  .use(fraudScoreController(container.scoreTransaction));
+  .use(diagnosticsController(container))
+  .use(fraudScoreController(container.scoreTransaction, container.metrics));
 
 app.listen(port, ({ hostname, port: actualPort }) => {
   // eslint-disable-next-line no-console

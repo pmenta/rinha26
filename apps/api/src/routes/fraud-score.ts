@@ -25,6 +25,8 @@ import {
   ScoreTransactionInputSchema,
 } from '@rinha26/core';
 
+import type { Metrics } from '../metrics.js';
+
 const ResponseShape = t.Object({
   approved: t.Boolean(),
   fraud_score: t.Number(),
@@ -33,27 +35,36 @@ const ResponseShape = t.Object({
 const DEFAULT_SAFE_RESPONSE = Object.freeze({ approved: true, fraud_score: 0 });
 
 /**
- * Factory da rota. Recebe o use case já injetado pelo container e devolve a
- * Elysia instance.
+ * Factory da rota. Recebe o use case + `Metrics` injetados pelo container e
+ * devolve a Elysia instance.
+ *
+ * `Metrics` é opcional para retro-compat com testes existentes que só
+ * passam o use case; quando ausente, contadores não são incrementados.
  *
  * Nota: o tipo de retorno **não é anotado** intencionalmente — Elysia depende de
  * inferência paramétrica para preservar metadados de rotas (path, body, response).
  * Anotar com `: Elysia` apaga isso e quebra `.use(...)`/composição.
  */
-export const fraudScoreController = (useCase: ScoreTransactionUseCase) =>
+export const fraudScoreController = (
+  useCase: ScoreTransactionUseCase,
+  metrics?: Metrics,
+) =>
   new Elysia().post(
     '/fraud-score',
     ({ body }) => {
       const parsed = ScoreTransactionInputSchema.safeParse(body);
       if (!parsed.success) {
+        metrics?.incDefaultSafeInvalidBody();
         return DEFAULT_SAFE_RESPONSE;
       }
 
       const result = useCase.execute(parsed.data);
       if (result.isFail()) {
+        metrics?.incDefaultSafeUseCaseFail();
         return DEFAULT_SAFE_RESPONSE;
       }
 
+      metrics?.incKnnReal();
       return result.unwrap();
     },
     {

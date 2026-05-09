@@ -119,6 +119,17 @@ function printHelp(): void {
 interface ResultRow {
   readonly category: Categoria;
   readonly latency_ms: number;
+  /** Bucket categórico do status: '2xx' / '4xx' / '5xx' / 'timeout' / 'connect_error' / 'unknown'. */
+  readonly statusBucket: string;
+}
+
+function bucketize(status: number, errored: boolean): string {
+  if (errored && status === 0) return 'timeout/connect_error';
+  if (status >= 200 && status < 300) return '2xx';
+  if (status >= 400 && status < 500) return '4xx';
+  if (status >= 500 && status < 600) return '5xx';
+  if (status === 0) return 'unknown';
+  return `${status}`;
 }
 
 async function postOne(
@@ -129,6 +140,7 @@ async function postOne(
   const t0 = performance.now();
   let status = 0;
   let body: FraudScoreBody | null = null;
+  let errored = false;
   try {
     const res = await fetch(`${base}/fraud-score`, {
       method: 'POST',
@@ -145,11 +157,115 @@ async function postOne(
     }
   } catch {
     status = 0;
+    errored = true;
   }
   const latency = performance.now() - t0;
   return {
     category: classify(status, body, expectedApproved),
     latency_ms: latency,
+    statusBucket: bucketize(status, errored),
+  };
+}
+
+/** Histograma simples (ordem por contagem decrescente). */
+function histogram(values: readonly string[]): Record<string, number> {
+  const m: Record<string, number> = {};
+  for (const v of values) m[v] = (m[v] ?? 0) + 1;
+  // Ordena por contagem decrescente para o stdout ficar legível.
+  const entries = Object.entries(m).sort((a, b) => b[1] - a[1]);
+  return Object.fromEntries(entries);
+}
+
+function formatHist(h: Record<string, number>): string {
+  return Object.entries(h)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' ');
+}
+
+// --------------------------------------------------------------------------- //
+// Snapshot do /diagnostics (instrumentação do servidor)                        //
+// --------------------------------------------------------------------------- //
+
+interface ReplicaDiag {
+  ready: boolean;
+  vector_index_kind: string;
+  reference_count: number;
+  metrics: {
+    default_safe_use_case_fail: number;
+    default_safe_invalid_body: number;
+    knn_real: number;
+    total: number;
+  };
+}
+
+/**
+ * Coleta `/diagnostics` 4× em rápida sucessão para tentar pegar **ambas**
+ * as réplicas via round-robin do nginx. Soma os contadores das amostras
+ * únicas (deduplica por `reference_count + total`).
+ */
+async function sampleDiagnostics(base: string): Promise<readonly ReplicaDiag[]> {
+  const samples: ReplicaDiag[] = [];
+  for (let i = 0; i < 4; i += 1) {
+    try {
+      const res = await fetch(`${base}/diagnostics`, {
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (res.ok) {
+        const d = (await res.json()) as ReplicaDiag;
+        samples.push(d);
+      }
+    } catch {
+      // ignora — endpoint pode não existir em runtimes antigos
+    }
+  }
+  return samples;
+}
+
+interface DiagDelta {
+  default_safe_use_case_fail: number;
+  default_safe_invalid_body: number;
+  knn_real: number;
+  sampled_replicas: number;
+}
+
+function diffDiagnostics(
+  before: readonly ReplicaDiag[],
+  after: readonly ReplicaDiag[],
+): DiagDelta | null {
+  if (before.length === 0 || after.length === 0) return null;
+
+  // Estima o "total por réplica" antes/depois somando contadores únicos.
+  // Mesma réplica pode aparecer várias vezes no sample; deduplica via
+  // (reference_count, knn_real, default_safe_*).
+  const sumUnique = (arr: readonly ReplicaDiag[]): {
+    knn: number;
+    dsFail: number;
+    dsBody: number;
+    replicas: number;
+  } => {
+    const seen = new Set<string>();
+    let knn = 0;
+    let dsFail = 0;
+    let dsBody = 0;
+    for (const d of arr) {
+      const key = `${d.reference_count}:${d.metrics.knn_real}:${d.metrics.default_safe_use_case_fail}:${d.metrics.default_safe_invalid_body}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      knn += d.metrics.knn_real;
+      dsFail += d.metrics.default_safe_use_case_fail;
+      dsBody += d.metrics.default_safe_invalid_body;
+    }
+    return { knn, dsFail, dsBody, replicas: seen.size };
+  };
+
+  const b = sumUnique(before);
+  const a = sumUnique(after);
+
+  return {
+    knn_real: a.knn - b.knn,
+    default_safe_use_case_fail: a.dsFail - b.dsFail,
+    default_safe_invalid_body: a.dsBody - b.dsBody,
+    sampled_replicas: Math.max(a.replicas, b.replicas),
   };
 }
 
@@ -229,9 +345,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Snapshot inicial de /diagnostics (se disponível) — para distinguir reqs
+  // que rodaram KNN real das que caíram em default-safe (ADR-002).
+  // Como o nginx é round-robin, o snapshot vê SÓ uma das réplicas; pegamos
+  // várias amostras em sequência e somamos para aproximar.
+  const diagBefore = await sampleDiagnostics(args.base);
+
   const t0 = performance.now();
   const rows = await runWithPool(slice, args.concurrency, args.base);
   const elapsed = performance.now() - t0;
+
+  const diagAfter = await sampleDiagnostics(args.base);
 
   // Agrega.
   const breakdown: Breakdown = { tp: 0, tn: 0, fp: 0, fn: 0, err: 0 };
@@ -249,6 +373,10 @@ async function main(): Promise<void> {
   const p99 = quantile(lats, 0.99);
   const report = summarize(breakdown, p99);
 
+  // Distribuição de status codes + categoria do hot path no servidor.
+  const statusHist = histogram(rows.map((r) => r.statusBucket));
+  const diagDelta = diffDiagnostics(diagBefore, diagAfter);
+
   // Output.
   mkdirSync(dirname(args.out), { recursive: true });
   const outPayload = {
@@ -262,6 +390,8 @@ async function main(): Promise<void> {
       elapsed_ms: Number(elapsed.toFixed(0)),
       throughput_rps: Number((slice.length / (elapsed / 1000)).toFixed(2)),
       captured_at: new Date().toISOString(),
+      client_status_histogram: statusHist,
+      server_diagnostics_delta: diagDelta,
     },
   };
   writeFileSync(args.out, `${JSON.stringify(outPayload, null, 2)}\n`);
@@ -275,8 +405,24 @@ async function main(): Promise<void> {
       `  breakdown    = TP=${breakdown.tp} TN=${breakdown.tn} FP=${breakdown.fp} FN=${breakdown.fn} Err=${breakdown.err}\n` +
       `  failure_rate = ${s.failure_rate}%   (E=${s.weighted_errors_E}, ε=${s.error_rate_epsilon})\n` +
       `  elapsed      = ${(elapsed / 1000).toFixed(2)} s   (${outPayload.meta.throughput_rps} rps)\n` +
+      `\n  client status: ${formatHist(statusHist)}\n` +
+      (diagDelta === null
+        ? `  server diag : (não disponível — endpoint /diagnostics não respondeu)\n`
+        : `  server diag : KNN_real=${diagDelta.knn_real}` +
+          ` default_safe_use_case_fail=${diagDelta.default_safe_use_case_fail}` +
+          ` default_safe_invalid_body=${diagDelta.default_safe_invalid_body}` +
+          ` (sample de ${diagDelta.sampled_replicas} réplica(s))\n`) +
       `\nsaved → ${args.out}\n`,
   );
+
+  // Heurística de aviso: se p99 < 5ms e default_safe_use_case_fail > 0,
+  // é sinal de que o resultado bonito vem de respostas mascarando saturação.
+  if (diagDelta !== null && diagDelta.default_safe_use_case_fail > 0 && p99 < 5) {
+    process.stderr.write(
+      `\n⚠️  AVISO: ${diagDelta.default_safe_use_case_fail} req(s) caíram em default-safe ` +
+        `(provável race com lazy load OU saturação) — o final_score pode estar ARTIFICIALMENTE alto.\n`,
+    );
+  }
 }
 
 await main();

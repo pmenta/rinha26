@@ -34,6 +34,7 @@ import {
 import { loadMccRisk } from './loaders/mcc-risk.loader.js';
 import { loadNormalization } from './loaders/normalization.loader.js';
 import { loadReferences } from './loaders/references.loader.js';
+import { Metrics } from './metrics.js';
 
 /** Container já com use cases prontos para serem injetados nas rotas. */
 export interface Container {
@@ -45,6 +46,8 @@ export interface Container {
   readonly vectorIndexKind: VectorIndexKind;
   /** Snapshot da contagem atual de vetores no índice (atualiza após lazy load). */
   readonly referenceCount: () => number;
+  /** Métricas de instrumentação por categoria de resposta (default-safe vs KNN). */
+  readonly metrics: Metrics;
 }
 
 /** Caminhos default coerentes com o `Dockerfile` da Fase 2 (`/app/resources/...`). */
@@ -197,10 +200,13 @@ export async function createContainer(): Promise<Container> {
     vectorIndex: vectorIndexProxy,
   });
 
+  const metrics = new Metrics();
+
   return {
     scoreTransaction,
     readiness: () => ready,
     vectorIndexKind,
     referenceCount: () => referenceCount,
+    metrics,
   };
 }

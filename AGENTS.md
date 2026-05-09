@@ -476,6 +476,28 @@ path, melhor o p99 (`docs/AVALIACAO.md` §Estratégias).
     bind mount de resources** desde a Iter 1 da Fase 5 — o
     `references.bin` está embutido na imagem `ghcr.io/.../rinha26-api`.
     Simplifica o output do `submission.yml`.
+18. **Política `default-safe` (ADR-002) MASCARA o sintoma de saturação
+    de CPU.** Quando o backend está saturado, o `useCase.execute` PODE
+    cair em `IResult.fail` em condições de race / lazy load
+    intermitente, e o handler responde `{approved:true, fraud_score:0}`
+    com `200`. Para o cliente externo (k6/simulator), isso é
+    indistinguível de um KNN real bem-sucedido contra payload legítimo.
+    **Solução**: `GET /diagnostics` (rota interna,
+    `apps/api/src/routes/diagnostics.ts`) expõe `Metrics`
+    (`knn_real`, `default_safe_use_case_fail`,
+    `default_safe_invalid_body`). O `score-simulator` (L12) faz
+    snapshot antes/depois e dispara aviso automático se p99 < 5ms E
+    `default_safe_use_case_fail > 0` — captura "score otimista
+    artificial".
+19. **CPU é o gargalo absoluto, não algoritmo nem RAM.** Brute-force
+    i16 sobre 3M vetores = ~50ms (CPU nativa amd64) / ~600ms (emulação
+    amd64 sobre Mac M / OrbStack). Em 1 vCPU total, o throughput
+    máximo da stack é **~3-12 req/s** (vs 900 req/s alvo do
+    `test/test.js`). Resultado de `k6 run test/test.js` na Iter 1:
+    `final_score = -6000` (corte triplo). Iter 2-5 (Bun.serve puro,
+    WASM SIMD, IVF, FFI Rust) **são mandatórias** para passar no
+    teste oficial. Vide tabela em `AGENTS.md §"Tabela de
+    benchmarks"` (a criar).
 
 ---
 
@@ -760,14 +782,16 @@ contexto perdido entre sessões e manter o agente sempre alinhado.
 
 | Componente | Arquivo | Notas |
 |---|---|---|
-| Bootstrap | `src/main.ts` | Lê `PORT` (default `3000`), monta container, expõe rotas. |
-| Container/wiring | `src/container.ts` | Carrega `mcc_risk.json` + `normalization.json` no startup (bloqueante); `references` em **background** (lazy). Proxy de `VectorIndexPort` permite swap atrás dos lazy loads. Falha de `mcc_risk` cai para tabela vazia (warn). |
+| Bootstrap | `src/main.ts` | Lê `PORT` (default `3000`), monta container, expõe rotas (incluindo `/diagnostics`). |
+| Container/wiring | `src/container.ts` | Carrega `mcc_risk.json` + `normalization.json` no startup (bloqueante); `references` em **background** (lazy) — `i16-brute-force` via binary loader, outros via JSON. Proxy de `VectorIndexPort` permite swap atrás do lazy load. Warmup de 20 queries antes de marcar `/ready=true` (ADR-005). Instancia `Metrics` para instrumentação. |
+| `Metrics` | `src/metrics.ts` | Contadores in-process: `knn_real`, `default_safe_use_case_fail`, `default_safe_invalid_body`, `total`. Sem dep, sem alocação por incremento. Snapshot imutável. |
 | Loader `readJsonWithZod` | `src/loaders/read-json-with-zod.ts` | Lê arquivo (com `.gz` transparente via `DecompressionStream('gzip')`), parse JSON, valida Zod. Devolve `IResult`. Usa `Bun.file` em runtime e `fs/promises + zlib` no Vitest/Node. |
 | Loader normalização | `src/loaders/normalization.loader.ts` | Aplica `NormalizationSchema` do core. |
 | Loader MCC | `src/loaders/mcc-risk.loader.ts` | `Record<string, number in [0,1]>`. |
 | Loader referências | `src/loaders/references.loader.ts` | Array `{vector:number[14], label}`. Aceita sentinela `-1`. |
-| `GET /ready` | `src/routes/ready.ts` | `200 {status:"ok"}` quando `refs.length > 0`; `503 {status:"loading"}` enquanto carrega. |
-| `POST /fraud-score` | `src/routes/fraud-score.ts` | Valida via Zod (`ScoreTransactionInputSchema`); chama use case; **default-safe `200 {approved:true, fraud_score:0}` em qualquer falha** (ver hurdle §11.6). |
+| `GET /ready` | `src/routes/ready.ts` | `200 {status:"ok"}` quando warmup terminou; `503 {status:"loading"}` enquanto carrega. |
+| `GET /diagnostics` (interno) | `src/routes/diagnostics.ts` | `{ready, vector_index_kind, reference_count, metrics}`. Não faz parte de `docs/API.md` — só usado pelo `score-simulator` (L12) para detectar `default-safe` mascarando saturação. Vide hurdle §11.18. |
+| `POST /fraud-score` | `src/routes/fraud-score.ts` | Valida via Zod (`ScoreTransactionInputSchema`); chama use case; **default-safe `200 {approved:true, fraud_score:0}` em qualquer falha** (ADR-002 + hurdle §11.18). Incrementa `Metrics` em cada path. |
 
 #### `scripts/score-simulator/` — substituto leve do k6 oficial (L12)
 
@@ -775,17 +799,28 @@ contexto perdido entre sessões e manter o agente sempre alinhado.
 |---|---|---|
 | Constantes + `classify` + `summarize` + `quantile` | `scripts/score-simulator/scoring.ts` | Replicação **bit-a-bit** de `test/test.js → handleSummary` (`docs/AVALIACAO.md`). Funções puras. Output JSON com mesmo schema do `test/results.json`. |
 | Specs golden | `scripts/score-simulator/scoring.spec.ts` | 18 testes: `classify` (TP/TN/FP/FN/Err), `quantile`, **8 cenários golden** da tabela "Exemplos de pontuação" de `docs/AVALIACAO.md` (final_score 6000 / 4524.15 / 4000 / 3157.02 / 1104.01 / 371.85 / -1000 / -6000). |
-| Runner CLI | `scripts/score-simulator/run.ts` | Pool de concorrência configurável, timeout 2001ms (idem k6), output JSON em `apps/api/test-output/simulator-results.json` + pretty print no stdout. |
+| Runner CLI | `scripts/score-simulator/run.ts` | Pool de concorrência configurável, timeout 2001ms (idem k6), output JSON em `apps/api/test-output/simulator-results.json` + pretty print no stdout. **Faz snapshot do `/diagnostics`** antes/depois e dispara aviso automático se `p99 < 5ms` AND `default_safe_use_case_fail > 0` (= score otimista artificial — vide hurdle §11.18). Reporta `client_status_histogram` para detectar muitos `timeout/connect_error`. |
 | Target Nx `simulate` | `package.json` | `bunx nx run api:simulate`. `cache: false`. |
 
-**Validação real**: rodando contra a stack docker com `example-references.json` (100 vetores), 2000 reqs com `--concurrency 80` → 1810 rps, p99 = 201 ms, `final_score = 1390.08`, 0 erros HTTP. Esperado: detecção será ruim com só 100 vetores; o simulator confirma que o pipeline funciona.
+**Validação real (Iter 1, brute-force i16 sobre 3M vetores, Mac M emulando linux/amd64)**:
 
-#### Testes do `apps/api` (28 testes, 4 specs)
+| Concurrency | Limit | Throughput | p99 | TP/TN/FP/FN/Err | final_score | Veredito |
+|---:|---:|---:|---:|---|---:|---|
+| 1 | 100 | 2.92 rps | 1039 ms | 42/58/0/0/0 | **2983** | honesto, sem saturação |
+| 5 | 200 | 6.10 rps | 1767 ms | 87/112/0/0/1 | **1121** | saudável, p99 alto |
+| 50 | 1000 | 24.93 rps | 2007 ms (corte) | 5/6/0/0/989 | **−6000** | saturado |
+| 50 | 5000 | 24.94 rps | 2007 ms (corte) | 4/7/0/0/4989 | **−6000** | saturado |
+
+A divergência **simulator vs k6 official**: ambos chegam a `−6000` quando a stack está saturada; em low-concurrency o simulator dá score honesto. **O número "3017" registrado em sessões anteriores não foi reproduzido** após a investigação (commit 65846e7 → diagnóstico). A instrumentação `/diagnostics` + warning agora detecta esse cenário automaticamente.
+
+#### Testes do `apps/api` (33 testes, 6 specs)
 
 | Spec | Cobertura |
 |---|---|
 | `routes/ready.spec.ts` | 200 quando ready / 503 quando loading. Usa `Elysia.handle(Request)` em-memória. 2 testes. |
 | `routes/fraud-score.spec.ts` | Caso fraudulento do PRD com 5 fraud-vizinhos → score 1; payload inválido → default-safe; índice vazio → default-safe. 3 testes. |
+| `routes/diagnostics.spec.ts` | `/diagnostics` reflete `{ready, kind, count, metrics}` e funciona com `ready=false`. 2 testes. |
+| `metrics.spec.ts` | Snapshot inicial zero; incrementos isolados; snapshot imutável. 3 testes. |
 | `loaders/loaders.spec.ts` | Lê e valida `normalization.json`, `mcc_risk.json`, `example-references.json` e o **`references.json.gz` real (3M vetores em ~6.7s no Vitest/Node)**. 5 testes. |
 | `scripts/score-simulator/scoring.spec.ts` | Specs golden da fórmula de scoring (8 casos do PRD + classify + quantile). 18 testes. |
 
@@ -846,12 +881,19 @@ container: `docker run --network=host grafana/k6:latest run /test/smoke.js`
     em runtime. **5× melhor p99** no bench L11.
   - **Warmup + nginx resiliente** (ADR-005): 20 queries dummy antes de
     `/ready=true`; `max_fails=0` + `proxy_read_timeout 5s`.
-  - **Resultado medido (Mac M emulando linux/amd64)**: `final_score = 3017`
-    (vs 1390 antes), p99 = 3.00ms, 38k rps, **0 errors HTTP**, k6 smoke
-    100% verde.
-  - 102 testes verdes (49 core + 56 vector-store + 28 api).
-- ⏳ **Fase 5 — Iterações 2-5** (a definir): runtime HTTP (Bun.serve puro
-  + Unix socket), WASM SIMD, IVF, Bun FFI/Rust AVX2.
+  - **Instrumentação `/diagnostics` + Metrics** (commit pós-3017
+    investigation): `Metrics` por categoria + warning automático no
+    simulator quando `p99 < 5ms` E `default_safe > 0`. Captura
+    "score otimista artificial" no futuro.
+  - **Realidade medida** (sob `k6 run test/test.js` oficial,
+    Mac M emulando linux/amd64): `final_score = -6000` (corte
+    triplo). Throughput máximo ~24 rps, vs 900 rps alvo. **Brute-force
+    JS está num teto arquitetural** — só Iter 3-5 (WASM SIMD / IVF /
+    FFI Rust) podem passar.
+  - 107 testes verdes (49 core + 56 vector-store + 33 api).
+- ⏳ **Fase 5 — Iterações 2-5** (mandatórias para passar no k6 oficial):
+  Bun.serve puro + Unix socket (Iter 2), WASM SIMD (Iter 3), IVF (Iter 4),
+  Bun FFI/Rust AVX2 (Iter 5).
 
 ---
 
