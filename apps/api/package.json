@@ -1,0 +1,31 @@
+{
+  "name": "@rinha26/api",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/main.ts",
+  "dependencies": {
+    "@rinha26/core": "*",
+    "@rinha26/vector-store": "*",
+    "elysia": "^1.4.0",
+    "typescript-monads": "^9.5.0",
+    "zod": "^4.3.6"
+  },
+  "nx": {
+    "name": "api",
+    "tags": ["scope:api"],
+    "targets": {
+      "dev": {
+        "command": "bun run --hot src/main.ts",
+        "options": { "cwd": "{projectRoot}" }
+      },
+      "serve": {
+        "command": "bun run src/main.ts",
+        "options": { "cwd": "{projectRoot}" }
+      },
+      "test": {
+        "executor": "@nx/vite:test"
+      }
+    }
+  }
+}

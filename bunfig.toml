@@ -1,0 +1,12 @@
+# Configuração do Bun para o monorepo @rinha26
+# - Usamos Bun como package manager + runtime para a API.
+# - Para os testes, usamos Vitest (plugin oficial do Nx). Não usamos `bun test`.
+
+[install]
+# Caches/lockfile padrão do Bun (bun.lock).
+# 'auto' = saveTextLockfile + lockfile binário quando disponível.
+saveTextLockfile = true
+
+[run]
+# Bun não interpreta '.tsx' por padrão fora de runtime React; mantemos default.
+shell = "system"

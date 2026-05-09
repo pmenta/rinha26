@@ -1,0 +1,53 @@
+# Compilados / build
+dist
+out-tsc
+*.tsbuildinfo
+
+# Dependências
+node_modules
+
+# Bun
+.bun
+
+# Caches Vite/Vitest
+vite.config.*.timestamp*
+vitest.config.*.timestamp*
+test-output
+
+# Cobertura / relatórios
+/coverage
+
+# Caches Nx
+.nx/cache
+.nx/workspace-data
+.nx/polygraph
+
+# Worktrees auxiliares
+.worktrees
+.claude/worktrees
+.claude/settings.local.json
+
+# Editores
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea
+*.sublime-workspace
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Env / segredos locais
+.env
+.env.local
+.env.*.local
+
+# Resultados do k6
+test/results.json
+
+# Hooks copiados manualmente
+hooks copy
+.cursor/hooks/state

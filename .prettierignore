@@ -1,0 +1,9 @@
+dist
+out-tsc
+.nx
+node_modules
+**/test-output/**
+docs/
+resources/example-payloads.json
+resources/example-references.json
+test/test-data.json
