@@ -131,10 +131,10 @@ jobs:
           O **código-fonte** vive na branch [`main`](../../tree/main).
           EOF
 
-      - name: Configure git
+      - name: Configure git (global, vale dentro de /tmp/submission)
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
       - name: Push to `submission`
         run: |
@@ -145,5 +145,5 @@ jobs:
           git init -b submission
           git add -A
           git commit -m "chore(submission): sync from main@${GITHUB_SHA::7}"
-          git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git push -f origin submission
